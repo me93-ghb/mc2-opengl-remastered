@@ -170,8 +170,10 @@ public:
 		bool						bPausedWithoutMenu;
 		bool						bEnergyWeapons;
 		bool						bDrawHotKeys;
-		long						resolution;
-		
+		// separate X and Y so a resolution change of only one dimension is seen
+		long						resolutionX;
+		long						resolutionY;
+
 		//-----------------------------------------------
 		// Attila (Strategic Commander) Data
 		float						attilaXAxis;
