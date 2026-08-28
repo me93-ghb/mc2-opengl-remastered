@@ -2027,6 +2027,22 @@ int main(int argc, char** argv)
                 static const bool s_preSwapFinish = (getenv("MC2_PRESWAP_FINISH") != nullptr);
                 if (s_preSwapFinish) { ZoneScopedN("SwapWindow.PreFinish"); glFinish(); }
             }
+            // macos-port: headless frame proof. On the offscreen (EGL) driver
+            // there is no visible window, so MC2_MACOS_FRAMEDUMP=<frame> writes
+            // the default framebuffer to a TGA at that frame -- concrete proof
+            // the Zink/kosmickrisp GL path renders. Off unless the env is set.
+            {
+                static const char* s_dumpFrameEnv = getenv("MC2_MACOS_FRAMEDUMP");
+                if (s_dumpFrameEnv) {
+                    static const unsigned long s_dumpFrame = strtoul(s_dumpFrameEnv, nullptr, 10);
+                    if ((unsigned long)g_mc2FrameCounter == s_dumpFrame) {
+                        const char* p = getenv("MC2_MACOS_FRAMEDUMP_PATH");
+                        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+                        gos::screenshot::writeTGA(p ? p : "mc2_frame.tga",
+                            Environment.drawableWidth, Environment.drawableHeight);
+                    }
+                }
+            }
             { ZoneScopedN("SwapWindow.SDL"); graphics::swap_window(win); }
             render_contract::renderPassTelemetryFrameTick();  // [RENDER_PASS v1] frame boundary
             render_contract::renderPassScopeFrameBoundary();   // ENFORCEMENT-1 missing-end flush

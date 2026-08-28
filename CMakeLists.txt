@@ -240,6 +240,27 @@ find_package(GLEW REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(ZLIB REQUIRED)
 
+# macos-port: Apple's OpenGL.framework caps at GL 4.1, but the engine needs a
+# 4.3 core context (compute shaders + SSBO). We route GL through Mesa's Zink
+# (GL->Vulkan) onto kosmickrisp (Vulkan->Metal). Mesa's libGL is a full-ABI
+# library that exports every GL entry point, so linking it ahead of
+# OpenGL.framework (a) rebinds the engine's directly-linked GL 1.1 symbols to
+# Mesa and (b) makes GLEW's global-scope proc lookup resolve to Mesa (Mesa
+# libGL loads before the framework GLEW pulls in). See dev/macos-run.sh for the
+# runtime Mesa/Zink/kosmickrisp environment. MC2_MACOS_MESA_LIBDIR overrides
+# the Homebrew Mesa lib dir if Mesa lives elsewhere.
+if(APPLE)
+    set(MC2_MACOS_MESA_LIBDIR "/opt/homebrew/opt/mesa/lib"
+        CACHE PATH "Directory containing Mesa's libGL.dylib for the Zink GL path")
+    find_library(MC2_MACOS_MESA_GL NAMES GL libGL
+        HINTS "${MC2_MACOS_MESA_LIBDIR}" NO_DEFAULT_PATH)
+    if(NOT MC2_MACOS_MESA_GL)
+        message(FATAL_ERROR "macos-port: Mesa libGL not found in ${MC2_MACOS_MESA_LIBDIR}. "
+            "Install with 'brew install mesa' or set -DMC2_MACOS_MESA_LIBDIR=<dir>.")
+    endif()
+    message(STATUS "macos-port: routing GL through Mesa libGL: ${MC2_MACOS_MESA_GL}")
+endif()
+
 list(APPEND CMAKE_MODULE_PATH "${MC2_SOURCE_DIR_CMAKE}/cmake")
 find_package(FFmpegLGPL REQUIRED)
 # Exposes MC2_VIDEO_DLL_LIST (C string array) in ${CMAKE_BINARY_DIR}/generated/mc2video_dlls.h
@@ -544,6 +565,15 @@ add_custom_target(build_fingerprint
     VERBATIM)
 
 add_executable(mc2 ${SOURCES} ${MAIN_SRC})
+# macos-port: dlsym->eglGetProcAddress interpose so GLEW resolves the full GL
+# entry-point set on the Mesa/Zink path (not just Mesa libGL's flat exports).
+# Must be DYLD_INSERT_LIBRARIES'd (see dev/macos-run.sh): a __interpose section
+# in the main executable does not reliably rebind an already-linked dylib like
+# GLEW, so it ships as its own inserted dylib.
+if(APPLE)
+    add_library(mc2_glshim SHARED "${CMAKE_SOURCE_DIR}/GameOS/gameos/macos_gl_proc_shim.c")
+    add_dependencies(mc2 mc2_glshim)
+endif()
 add_dependencies(mc2 build_fingerprint)
 # VULKAN-EDGE-FOG-ISLAND-2a: ensure the SPIR-V shaders (edge_fog.{vert,frag}.spv,
 # fullscreen.*) are baked when building the mc2 target directly (mc2_vulkan_shaders
@@ -575,7 +605,9 @@ if(MC2_VULKAN_ISLAND)
     target_compile_definitions(gameadapters PRIVATE MC2_VULKAN_ISLAND)
     target_compile_definitions(gui_runtime PRIVATE MC2_VULKAN_ISLAND)
 endif()
-target_link_libraries(mc2 mclib fx_trace particles gosfx mlr stuff gui gameos gameos_main windows ZLIB::ZLIB ${SDL2_LIBRARIES} GLEW::GLEW SDL2_mixer::SDL2_mixer ${ADDITIONAL_LIBS} OpenGL::GL renderworld gameadapters editorbridge imgui gui_runtime)
+# macos-port: ${MC2_MACOS_MESA_GL} (empty on non-Apple) is listed before
+# OpenGL::GL so the linker binds GL symbols to Mesa's libGL, not the framework.
+target_link_libraries(mc2 mclib fx_trace particles gosfx mlr stuff gui gameos gameos_main windows ZLIB::ZLIB ${SDL2_LIBRARIES} GLEW::GLEW SDL2_mixer::SDL2_mixer ${ADDITIONAL_LIBS} ${MC2_MACOS_MESA_GL} OpenGL::GL renderworld gameadapters editorbridge imgui gui_runtime)
 
 if(MC2_IMGUI)
     target_compile_definitions(mc2 PRIVATE MC2_IMGUI=1)
