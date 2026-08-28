@@ -105,11 +105,12 @@ int main(int argc, char** argv)
     }
 
     SPEW(("GRAPHICS", "Status: Using GLEW %s\n", glewGetString(GLEW_VERSION)));
-    if (!GLEW_ARB_vertex_program || !GLEW_ARB_vertex_program)
-    {
-        SPEW(("GRAPHICS", "No shader program support\n"));
-        return 1;
-    }
+    // macos-port: GL_ARB_vertex_program is the legacy assembly-shader extension,
+    // absent from a core profile (which the Zink/kosmickrisp path provides) and
+    // never used by text_tool. The original guard (also a duplicate-condition
+    // typo) fatally rejected any core context. Warn instead of bailing.
+    if (!GLEW_ARB_vertex_program)
+        SPEW(("GRAPHICS", "GL_ARB_vertex_program absent (core profile); continuing\n"));
 
     graphics::make_current_context(ctx);
 

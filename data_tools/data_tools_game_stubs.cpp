@@ -41,3 +41,14 @@ GameObjectManager* ObjectManager = nullptr;
 
 // code/gameplay_pick.cpp:202 -> void RunGameplayPickSelfTest()
 void RunGameplayPickSelfTest() {}
+
+// macos-port: aseconv pulls mech3d.cpp + gos_terrain_indirect.cpp +
+// debug_state_dump.cpp (which makefst does not), so the tool link needs these
+// engine globals the owning TUs (code/mechcmd2.cpp, logisticsmissioninfo.cpp,
+// unitprofile_fit.cpp) provide only in the full mc2 build.
+// mclib/timing.h -> extern bool gamePaused;   (owner code/mechcmd2.cpp:120)
+bool gamePaused = false;
+// code/logisticsmissioninfo.cpp:19 -> char missionName[1024];
+char missionName[1024] = {0};
+// code/unitprofile.h:31 -> extern "C" int mc2_unitprofile_collect_witness(...)
+extern "C" int mc2_unitprofile_collect_witness(void*, int) { return 0; }
