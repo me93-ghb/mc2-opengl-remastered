@@ -230,10 +230,13 @@ long HeapManager::commitHeap (unsigned long commitSize)
 #ifdef PLATFORM_WINDOWS
 #ifndef _WIN64
 		__asm { mov currentEbp,esp }
-#else	
+		prevEbp = *((unsigned long *)currentEbp);
+		retAddr = *((unsigned long *)(currentEbp+4));
+		whoMadeMe = retAddr;
+#else
 		return NO_ERR;
 #endif
-#else
+#elif defined(__x86_64__) || defined(__i386__)
 		// only correct for 64bit?
         // currentEbp = esp;
         asm("mov %%rsp, %0;"
@@ -241,10 +244,17 @@ long HeapManager::commitHeap (unsigned long commitSize)
             :
             :
         );
-#endif
 		prevEbp = *((unsigned long *)currentEbp);
 		retAddr = *((unsigned long *)(currentEbp+4));
 		whoMadeMe = retAddr;
+#else
+		// macos-port / ARM64: the x86 stack-pointer read + frame walk has no ARM64
+		// equivalent (different calling convention). The return-address builtin
+		// gives the caller portably -- that is what whoMadeMe records.
+		(void)currentEbp; (void)prevEbp;
+		retAddr = (unsigned long)(uintptr_t)__builtin_return_address(0);
+		whoMadeMe = retAddr;
+#endif
 
 		return NO_ERR;
 	}

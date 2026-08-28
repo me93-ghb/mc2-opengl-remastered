@@ -1627,4 +1627,24 @@ long ImportGeometryFromFile(const char* path, TG_TypeMultiShape* out, bool autoG
 	return 0;
 }
 
+#else  // !ENABLE_ASSIMP_IMPORTER
+
+// macos-port: Assimp mech import (Track D) is disabled, so provide stub definitions
+// of the mech_anim_runtime API. Base-game mechs use the original .fst assets; custom
+// FBX/GLB mech import stays off until the Assimp dependency is ported to macOS.
+#include "mech_anim_runtime.h"
+namespace mc2mechanim {
+void  TickImportedMechs(float, unsigned, const MechMotion&, const void*, const void*, bool) {}
+bool  AnyImportedAnim() { return false; }
+bool  ImportedGpuEnabled() { return false; }
+int   ImportedGpuTypeInfo(const void*, const unsigned char**, int*) { return 0; }
+int   ImportedGpuModelDelta(const void*, const float**) { return 0; }
+float ImportedGpuLift(const void*) { return 0.0f; }
+int   ImportedGpuLiftAxis() { return 0; }
+void  UnregisterImportedActor(const void*) {}
+const char* ImportedMechAoTexName(const void*) { return nullptr; }
+const char* ImportedMechNormalTexName(const void*) { return nullptr; }
+bool  GetImportedNodeWorld(const void*, const void*, const char*, const float*, float[3]) { return false; }
+}  // namespace mc2mechanim
+
 #endif // ENABLE_ASSIMP_IMPORTER

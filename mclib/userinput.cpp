@@ -111,7 +111,9 @@ void MouseCursorData::initCursors (const char *cursorFileName)
 			ZoneScopedN("MouseCursorData::initCursors metadata");
 			cursorFile.readIdChar( "HotSpotX", mouseHS[i][0] );
 			cursorFile.readIdChar( "HotSpotY", mouseHS[i][1] );
-			cursorFile.readIdULong( "NumFrames", numFrames[i] );
+			uint64_t nf = 0; // macos-port: numFrames[] is unsigned long; bind uint64_t& overload
+			cursorFile.readIdULong( "NumFrames", nf );
+			numFrames[i] = (unsigned long)nf;
 			cursorFile.readIdFloat( "FrameLength", frameLengths[i] );
 		}
 

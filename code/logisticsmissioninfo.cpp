@@ -16,7 +16,7 @@ LogisticsMissionInfo.cpp			: Implementation of the LogisticsMissionInfo componen
 #include"logisticserrors.h"
 #include"multplyr.h"
 
-extern char missionName[1024];
+char missionName[1024]; // macos-port: owning definition (code/logmain.cpp, which held it, isn't in the build)
 
 LogisticsMissionInfo::LogisticsMissionInfo()
 {

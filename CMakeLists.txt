@@ -381,13 +381,15 @@ add_subdirectory("GuiRuntime")
 # Standalone ImGui UI Editor.
 # Guarded so source snapshots that carry only changelog/version files do
 # not break configure, while full local UI Editor trees produce ui_editor.vcxproj.
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ui_editor/CMakeLists.txt")
+# macos-port: these are Windows desktop tools (hardcoded 3rdparty/x64 import
+# libs, MFC/Win resource deps). Skip on Apple so the mc2 game target configures.
+if(NOT APPLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ui_editor/CMakeLists.txt")
     add_subdirectory("./ui_editor" "./out/ui_editor")
 endif()
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/asset_viewer/CMakeLists.txt")
+if(NOT APPLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/asset_viewer/CMakeLists.txt")
     add_subdirectory("./tools/asset_viewer" "./out/tools/asset_viewer")
 endif()
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/mc2_launcher/CMakeLists.txt")
+if(NOT APPLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/mc2_launcher/CMakeLists.txt")
     add_subdirectory("./tools/mc2_launcher" "./out/tools/mc2_launcher")
 endif()
 # mc2fx — standalone gosFX .fx blob inspector (opt-in; curated game-free target).
@@ -627,6 +629,10 @@ install(FILES ${FFmpegLGPL_RUNTIME_DLLS} DESTINATION ".")
 # mc2res) and explicit filenames for GLEW/ZLIB (their IMPORTED_LOCATION
 # points at the .lib import library). vcpkg colocates all DLLs next to
 # SDL2.dll, so anchor on $<TARGET_FILE_DIR:SDL2::SDL2>.
+# macos-port: DLL sideloading is a Windows concern. On macOS the SDL2/GLEW/zlib
+# dylibs are resolved via rpath / system paths, so skip these copies (glew32.dll /
+# zlib1.dll do not exist and the copy fails the build).
+if(WIN32)
 set(_mc2_runtime_dll_targets
     SDL2::SDL2
     SDL2_mixer::SDL2_mixer
@@ -648,6 +654,7 @@ foreach(_dll_name glew32.dll zlib1.dll)
         VERBATIM
     )
 endforeach()
+endif() # WIN32 (DLL sideloading)
 
 # ASan runtime DLL must sit next to mc2.exe. Without it the exe fails to
 # launch with status 0xC0000139 (entry point not found). The DLL ships with

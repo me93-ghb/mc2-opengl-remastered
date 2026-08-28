@@ -474,7 +474,7 @@ long Camera::init (FitIniFilePtr cameraFile )
 	gosASSERT(result == NO_ERR);
 
     // sebi
-    unsigned long tmp;
+    uint64_t tmp; // macos-port: match readIdULong(uint64_t&); unsigned long != uint64_t on macOS
 	result = cameraFile->readIdULong("FogColor", tmp);
     fogColor = (DWORD)tmp;
 	dayFogColor = fogColor;

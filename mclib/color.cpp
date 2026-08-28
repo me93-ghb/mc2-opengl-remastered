@@ -73,7 +73,7 @@ void initColorTables (void)
 			sprintf(colorBlock,"Color%d",j);
 
             // sebi
-            long unsigned int tmp;
+            uint64_t tmp; // macos-port: match readIdULong(uint64_t&); unsigned long != uint64_t on macOS
 			result = colorFile.readIdULong(colorBlock, tmp);
             table[j] = (DWORD)tmp;
 			gosASSERT(result == NO_ERR);

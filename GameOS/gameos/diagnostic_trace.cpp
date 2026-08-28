@@ -197,11 +197,16 @@ void init(const char* sessionId, int pid) {
     // NOT L"a,ccs=UTF-8": that opens a wide-char stream (writes UTF-8 BOM,
     //   expects fputws/fwprintf) and triggers MSVC _invalid_parameter abort
     //   on the subsequent narrow fwrite() call.
+#ifdef _WIN32
     s.file = _wfopen(path.wstring().c_str(), L"ab");
     if (!s.file) {
         // Try ASCII path as fallback
         s.file = fopen(path.string().c_str(), "ab");
     }
+#else
+    // macos-port: no wide-char CRT; open the narrow path directly.
+    s.file = fopen(path.string().c_str(), "ab");
+#endif
     if (!s.file) {
         fprintf(stderr, "[MC2_DIAG] WARNING: cannot open trace file %s\n",
                 path.string().c_str());

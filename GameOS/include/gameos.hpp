@@ -40,12 +40,24 @@
 #include<string.h> // memcmp
 #include "platform_windows.h"
 
+#if defined(__aarch64__) || defined(__arm64__)
+static __inline__ unsigned long long rdtsc(void)
+{
+    // macos-port: ARM64 has no RDTSC. CNTVCT_EL0 is the analogous free-running
+    // virtual counter. Callers treat this as a monotonic tick source (see the
+    // note below), so its differing tick rate vs the x86 TSC does not matter.
+    unsigned long long x;
+    __asm__ volatile ("mrs %0, cntvct_el0" : "=r" (x));
+    return x;
+}
+#else
 static __inline__ unsigned long long rdtsc(void)
 {
     unsigned long x;
     __asm__ volatile (".byte 0x0f, 0x31" : "=A" (x));
     return x;
 }
+#endif
 // or just use clock_gettime(CLOCK_MONOTONIC_RAW);
 // or 
 //clock_gettime(CLOCK_PROCESS_CPUTIME_ID)

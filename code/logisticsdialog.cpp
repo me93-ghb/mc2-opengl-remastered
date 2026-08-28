@@ -633,7 +633,7 @@ void LogisticsSaveDialog::initDialog( const char* path, bool bCampaign )
 			LogisticsSaveDialog* self;
 			unsigned long itemColor;
 		};
-		ModCampaignCtx ctx = { this, edits[0].getColor() };
+		ModCampaignCtx ctx = { this, (unsigned long)edits[0].getColor() }; // macos-port: clang rejects long->unsigned long narrowing in {}
 		EnumerateModCampaignFiles([](const char* fitFileName, const char* fullPath, void* ud) {
 			ModCampaignCtx* c = static_cast<ModCampaignCtx*>(ud);
 

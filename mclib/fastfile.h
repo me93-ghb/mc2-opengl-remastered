@@ -21,7 +21,7 @@
 extern bool FastFileInit (const char *fname);
 extern void FastFileFini (void);
 extern FastFile *FastFileFind (const char *fname, long &fastFileHandle);
-extern "C" DWORD elfHash (const char *name); // linkage matches fst_hash.cpp (extern "C")
+extern "C" unsigned long elfHash (const char *name); // macos-port: type+linkage match fst_hash.cpp (DWORD != unsigned long on non-Win)
 //-----------------------------------------------------------------------------------
 
 

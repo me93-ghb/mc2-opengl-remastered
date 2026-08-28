@@ -230,12 +230,18 @@ void json_escape(const std::string& s, std::string& out) {
     }
 }
 
+#if defined(__APPLE__)
+#include <crt_externs.h> // macos-port: _NSGetEnviron() -- environ isn't declared in <unistd.h>
+#endif
+
 // Sorted list of MC2_* env var NAMES currently set (the gate-env set).
 void collect_gate_env(std::vector<std::string>& names) {
 #if defined(_WIN32)
     // _environ is declared by <stdlib.h>; do not re-declare (a namespace-scoped
     // redeclaration would acquire internal linkage and fail to link on MSVC).
     char** e = _environ;
+#elif defined(__APPLE__)
+    char** e = *_NSGetEnviron();
 #else
     char** e = environ;
 #endif

@@ -273,6 +273,20 @@ namespace MemoryStreamIO {
 			Stuff::MemoryStream* stream,
 			const Stuff::MemoryStream* input_stream
 		);
+
+#if defined(__APPLE__)
+	// macos-port: on LP64 macOS `unsigned long` (which is what size_t is) is a
+	// distinct 64-bit type from `unsigned long long` (uint64_t), so size_t values
+	// streamed via operator<< / >> match none of the integer overloads above.
+	// Delegate to the uint64_t versions. On Linux `unsigned long` == uint64_t, so
+	// these would be redefinitions there -- hence __APPLE__ only.
+	inline Stuff::MemoryStream&
+		Read(Stuff::MemoryStream* stream, unsigned long* output)
+			{ return Read(stream, reinterpret_cast<uint64_t*>(output)); }
+	inline Stuff::MemoryStream&
+		Write(Stuff::MemoryStream* stream, const unsigned long* input)
+			{ return Write(stream, reinterpret_cast<const uint64_t*>(input)); }
+#endif
 }
 
 namespace Stuff {

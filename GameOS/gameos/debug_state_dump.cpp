@@ -201,10 +201,17 @@ bool writeFileAtomic(const std::filesystem::path& dir,
 
     // Atomic replace on same filesystem (MoveFileEx is atomic on NTFS for same-dir rename).
     // MOVEFILE_WRITE_THROUGH: flush OS cache before returning so MCP readers see durable data.
+#ifdef _WIN32
     if (MoveFileExW(tmpPath.wstring().c_str(), finalPath.wstring().c_str(),
                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         return true;
     }
+#else
+    // macos-port: rename() is atomic on the same filesystem (POSIX).
+    if (rename(tmpPath.string().c_str(), finalPath.string().c_str()) == 0) {
+        return true;
+    }
+#endif
     // Fallback: remove tmp
     std::error_code ec;
     std::filesystem::remove(tmpPath, ec);

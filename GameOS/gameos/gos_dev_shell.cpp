@@ -45,6 +45,7 @@ void registerCommand(const char* name, CommandHandler fn)
 // mac/linux port together with the rest of the platform layer).
 bool pollCommands(uint32_t) { return false; }
 void capturePendingScreenshot(uint32_t) {}
+void scheduleScreenshot(const char*, bool) {} // macos-port: dev-shell is winsock-only; inert stub
 #else
 
 namespace {

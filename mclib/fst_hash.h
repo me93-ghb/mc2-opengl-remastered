@@ -28,7 +28,7 @@ extern "C" {
 
 // ELF dictionary hash. Byte-stream-deterministic; case-sensitive.
 // Matches the historical definition in mclib/fastfile.cpp 1:1.
-unsigned long elfHash(const char* name);
+extern "C" unsigned long elfHash(const char* name); // macos-port: linkage matches fst_hash.cpp
 
 // Write a slash-normalized copy of src into dst (null-terminated).
 // Every '\\' byte becomes '/'; all other bytes pass through.

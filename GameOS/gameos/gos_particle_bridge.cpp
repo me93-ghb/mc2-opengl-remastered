@@ -631,8 +631,7 @@ extern "C" void gos_tube_ribbon_flush(const float*          positions,
     glUseProgram((GLuint)savedProgram);
     glBindVertexArray((GLuint)savedVAO);
 
-    extern void __stdcall gos_InvalidateRenderStateCache();
-    gos_InvalidateRenderStateCache();
+    gos_InvalidateRenderStateCache(); // macos-port: use gameos.hpp extern "C" decl (local re-extern had C++ linkage)
 }
 
 // ── TUBE-DEFERRED-FLUSH-1: per-frame ribbon queue ─────────────────────────
@@ -895,8 +894,7 @@ extern "C" void gos_tube_ribbon_flush_deferred(void) {
     glUseProgram((GLuint)savedProgram);
     glBindVertexArray((GLuint)savedVAO);
 
-    extern void __stdcall gos_InvalidateRenderStateCache();
-    gos_InvalidateRenderStateCache();
+    gos_InvalidateRenderStateCache(); // macos-port: use gameos.hpp extern "C" decl (local re-extern had C++ linkage)
 
     s_ribbonQueue.clear();
 }
@@ -1341,8 +1339,7 @@ extern "C" void gos_particle_bridge_flush(const mc2::particles::GpuParticle* rec
     // cards drawn after this bridge) -> intermittent state-driven flicker.
     // Force the cache to re-sync. Cost: a few extra state calls on the next
     // draw, once per frame — same guard the mech batcher uses (gos_mech_batcher.cpp).
-    extern void __stdcall gos_InvalidateRenderStateCache();
-    gos_InvalidateRenderStateCache();
+    gos_InvalidateRenderStateCache(); // macos-port: use gameos.hpp extern "C" decl (local re-extern had C++ linkage)
 }
 
 // VFX-SPINE-0: read-only accessors for the Object Inspector. Pure getters

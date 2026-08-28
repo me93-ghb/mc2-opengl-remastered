@@ -13,6 +13,8 @@
 #include <dirent.h>
 #include <fnmatch.h>
 #include <stdint.h>
+#include <limits.h> // macos-port: PATH_MAX for GetFullPathNameA
+#include <pthread.h> // macos-port: GetCurrentThreadId
 #include <libgen.h> // dirname
 #include <stdlib.h> // free
 #include <stdio.h> // free
@@ -20,6 +22,14 @@
 
 #include"platform_windows.h"
 #include"platform_str.h"
+
+#if defined(__APPLE__)
+// macos-port: BSD/macOS names the sub-second stat fields st_*timespec, whereas
+// Linux uses st_*tim. Map them so the shared POSIX code below compiles unchanged.
+#define st_atim st_atimespec
+#define st_mtim st_mtimespec
+#define st_ctim st_ctimespec
+#endif
 
 static int gGetLastError = 0;
 
@@ -391,6 +401,134 @@ BOOL WINAPI FindClose(HANDLE hFindFile)
     delete ffd;
 
     return TRUE;
+}
+
+
+// macos-port: POSIX-backed Win32 file/time query APIs used by the mod-discovery
+// and file-resolve trace in mclib/file.cpp (declarations in platform_winbase.h).
+// GameOS already provides FindFirstFileA/FindNextFileA/FindClose, so with these
+// the mod/campaign discovery works natively on non-Windows.
+
+static void UnixToFileTime(time_t secs, long nsecs, FILETIME* ft)
+{
+    // Win32 FILETIME is 100-ns ticks since 1601-01-01; the Unix epoch is
+    // 116444736000000000 ticks later.
+    unsigned long long v = (unsigned long long)secs * 10000000ULL
+                         + (unsigned long long)(nsecs / 100)
+                         + 116444736000000000ULL;
+    ft->dwLowDateTime  = (DWORD)(v & 0xFFFFFFFFULL);
+    ft->dwHighDateTime = (DWORD)(v >> 32);
+}
+
+BOOL WINAPI QueryPerformanceFrequency(LARGE_INTEGER* freq)
+{
+    if (!freq) return FALSE;
+    freq->QuadPart = 1000000000LL; // counter below is in nanoseconds
+    return TRUE;
+}
+
+BOOL WINAPI QueryPerformanceCounter(LARGE_INTEGER* count)
+{
+    if (!count) return FALSE;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    count->QuadPart = (long long)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+    return TRUE;
+}
+
+BOOL WINAPI GetFileAttributesExA(LPCSTR path, GET_FILEEX_INFO_LEVELS level, LPVOID info)
+{
+    (void)level;
+    if (!path || !info) return FALSE;
+    struct stat st;
+    if (stat(path, &st) != 0) return FALSE;
+    LPWIN32_FILE_ATTRIBUTE_DATA d = (LPWIN32_FILE_ATTRIBUTE_DATA)info;
+    d->dwFileAttributes = 0;
+    UnixToFileTime(st.st_mtim.tv_sec, st.st_mtim.tv_nsec, &d->ftLastWriteTime);
+    UnixToFileTime(st.st_ctim.tv_sec, st.st_ctim.tv_nsec, &d->ftCreationTime);
+    UnixToFileTime(st.st_atim.tv_sec, st.st_atim.tv_nsec, &d->ftLastAccessTime);
+    d->nFileSizeHigh = (DWORD)((unsigned long long)st.st_size >> 32);
+    d->nFileSizeLow  = (DWORD)((unsigned long long)st.st_size & 0xFFFFFFFFULL);
+    return TRUE;
+}
+
+LONG WINAPI CompareFileTime(const FILETIME* a, const FILETIME* b)
+{
+    unsigned long long av = ((unsigned long long)a->dwHighDateTime << 32) | a->dwLowDateTime;
+    unsigned long long bv = ((unsigned long long)b->dwHighDateTime << 32) | b->dwLowDateTime;
+    if (av < bv) return -1;
+    if (av > bv) return  1;
+    return 0;
+}
+
+HANDLE WINAPI CreateFileA(LPCSTR path, DWORD access, DWORD share, LPVOID sec,
+                          DWORD disp, DWORD flags, HANDLE templ)
+{
+    (void)access; (void)share; (void)sec; (void)disp; (void)flags; (void)templ;
+    // macos-port: mod-discovery only ever opens existing files for reading.
+    FILE* f = fopen(path, "rb");
+    return f ? (HANDLE)f : INVALID_HANDLE_VALUE;
+}
+
+BOOL WINAPI ReadFile(HANDLE h, LPVOID buf, DWORD toRead, DWORD* readOut, LPVOID overlapped)
+{
+    (void)overlapped;
+    if (h == INVALID_HANDLE_VALUE || h == NULL) { if (readOut) *readOut = 0; return FALSE; }
+    size_t n = fread(buf, 1, (size_t)toRead, (FILE*)h);
+    if (readOut) *readOut = (DWORD)n;
+    return TRUE;
+}
+
+BOOL WINAPI CloseHandle(HANDLE h)
+{
+    if (h == INVALID_HANDLE_VALUE || h == NULL) return FALSE;
+    fclose((FILE*)h);
+    return TRUE;
+}
+
+DWORD WINAPI GetFileAttributesA(LPCSTR path)
+{
+    if (!path) return INVALID_FILE_ATTRIBUTES;
+    struct stat st;
+    if (stat(path, &st) != 0) return INVALID_FILE_ATTRIBUTES;
+    return S_ISDIR(st.st_mode) ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+}
+
+DWORD WINAPI GetFullPathNameA(LPCSTR name, DWORD bufLen, LPSTR buf, LPSTR* filePart)
+{
+    if (!name || !buf) return 0;
+    char resolved[PATH_MAX];
+    // realpath resolves . / .. / symlinks but requires the path to exist (true for
+    // mods roots). Fall back to a lexical cwd-join otherwise.
+    if (!realpath(name, resolved)) {
+        if (name[0] == '/') {
+            strncpy(resolved, name, sizeof(resolved) - 1);
+            resolved[sizeof(resolved) - 1] = '\0';
+        } else {
+            char cwd[PATH_MAX];
+            if (!getcwd(cwd, sizeof(cwd))) return 0;
+            snprintf(resolved, sizeof(resolved), "%s/%s", cwd, name);
+        }
+    }
+    size_t n = strlen(resolved);
+    if (n + 1 > (size_t)bufLen) return (DWORD)(n + 1); // Win32: required size incl NUL
+    memcpy(buf, resolved, n + 1);
+    if (filePart) { char* s = strrchr(buf, '/'); *filePart = s ? s + 1 : buf; }
+    return (DWORD)n;
+}
+
+DWORD WINAPI GetCurrentThreadId(void)
+{
+    // macos-port: a stable per-thread id for logging/tracing (not a real Win32 TID).
+    return (DWORD)(uintptr_t)pthread_self();
+}
+
+unsigned long long WINAPI GetTickCount64(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (unsigned long long)ts.tv_sec * 1000ULL
+         + (unsigned long long)ts.tv_nsec / 1000000ULL;
 }
 
 

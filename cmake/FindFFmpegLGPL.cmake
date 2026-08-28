@@ -7,6 +7,37 @@
 #   FFmpegLGPL::swresample
 # Plus FFmpegLGPL_RUNTIME_DLLS (list of absolute DLL paths) for install().
 
+if(APPLE)
+    # macos-port: the vendored tree is Windows-only (.dll + .lib). Use the system
+    # / Homebrew FFmpeg (.dylib) instead, exposing the same FFmpegLGPL::* imported
+    # targets so nothing else in the build has to change.
+    find_path(FFmpegLGPL_INCLUDE_DIR libavcodec/avcodec.h
+        PATHS /opt/homebrew/include /usr/local/include)
+    if(NOT FFmpegLGPL_INCLUDE_DIR)
+        message(FATAL_ERROR "FFmpegLGPL: FFmpeg headers not found. Run: brew install ffmpeg")
+    endif()
+    set(FFmpegLGPL_RUNTIME_DLLS "")
+    foreach(_n avcodec avformat avutil swscale swresample)
+        find_library(_ff_lib_${_n} ${_n} PATHS /opt/homebrew/lib /usr/local/lib)
+        if(NOT _ff_lib_${_n})
+            message(FATAL_ERROR "FFmpegLGPL: lib${_n} not found. Run: brew install ffmpeg")
+        endif()
+        add_library(FFmpegLGPL::${_n} SHARED IMPORTED)
+        set_target_properties(FFmpegLGPL::${_n} PROPERTIES
+            IMPORTED_LOCATION "${_ff_lib_${_n}}"
+            INTERFACE_INCLUDE_DIRECTORIES "${FFmpegLGPL_INCLUDE_DIR}")
+    endforeach()
+    set(FFmpegLGPL_FOUND TRUE)
+    # No DLLs to sideload on macOS (dylibs are linked directly) -> empty name list.
+    set(FFMPEG_DLL_NAMES_CLIST "")
+    configure_file(
+        "${CMAKE_SOURCE_DIR}/cmake/mc2video_dlls.h.in"
+        "${CMAKE_BINARY_DIR}/generated/mc2video_dlls.h"
+        @ONLY)
+    message(STATUS "FFmpegLGPL (macos-port): ${FFmpegLGPL_INCLUDE_DIR} + Homebrew dylibs")
+    return()
+endif()
+
 set(FFMPEG_VENDOR_DIR "${CMAKE_SOURCE_DIR}/3rdparty/ffmpeg-lgpl-win64")
 
 if(NOT EXISTS "${FFMPEG_VENDOR_DIR}/include/libavcodec/avcodec.h")

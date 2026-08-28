@@ -110,8 +110,12 @@ set(SOURCES ${SOURCES}
 # Track D — Assimp-backed FBX/GLB mech importer.
 # Source file always exists; its body is gated on ENABLE_ASSIMP_IMPORTER so
 # it compiles to nothing when off.
+# macos-port: always compile assimp_importer.cpp. Its body is #ifdef
+# ENABLE_ASSIMP_IMPORTER with an #else that stubs the mech_anim_runtime API, so the
+# engine links even with the importer off (matches the "compiles to nothing" intent
+# above, but leaves the stub definitions behind instead of an empty TU).
+list(APPEND SOURCES assimp_importer.cpp)
 if(ENABLE_ASSIMP_IMPORTER)
-    list(APPEND SOURCES assimp_importer.cpp)
     # Shared skeleton/FK math (BT2018-SKEL-ENGINE-1). Same TU the standalone
     # mech_import_harness links — one math path for tool and game.
     list(APPEND SOURCES mech_skel_import.cpp)

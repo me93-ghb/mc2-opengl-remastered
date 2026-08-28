@@ -14,11 +14,17 @@
 
 extern "C" unsigned long elfHash(const char* name)
 {
-    unsigned long h = 0, g;
+    // macos-port: the accumulator MUST be exactly 32-bit. The historical hash ran
+    // on 32-bit `unsigned long` (Win32), where `h << 4` wraps at 32 bits. On LP64
+    // (macOS/Linux) `unsigned long` is 64-bit, so `h` would grow past 32 bits and
+    // produce different values -> FST asset keys (baked with the 32-bit hash) would
+    // never match. `unsigned int` is 32-bit on every target we build, so this
+    // reproduces the original values exactly.
+    unsigned int h = 0, g;
     while (*name)
     {
         h = (h << 4) + (unsigned char)(*name++);
-        if ((g = h & 0xF0000000UL))
+        if ((g = h & 0xF0000000U))
             h ^= g >> 24;
         h &= ~g;
     }

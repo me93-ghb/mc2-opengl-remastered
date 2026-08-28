@@ -175,4 +175,9 @@ namespace Stuff {
 
 }
 
+#if defined(__APPLE__)
+	#include <new>   // macos-port: libc++ already declares placement operator
+	                 // new with an ABI tag; redeclaring it here is a hard error.
+#else
 void* operator new(size_t size, void* where) noexcept;
+#endif

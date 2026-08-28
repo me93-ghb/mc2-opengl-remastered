@@ -5,6 +5,10 @@
 #include <sys/stat.h>
 #include <string.h>
 
+#if defined(__APPLE__)
+#define st_mtim st_mtimespec // macos-port: BSD names the sub-second stat field st_mtimespec
+#endif
+
 namespace filesystem {
 
 #ifdef LINUX_BUILD

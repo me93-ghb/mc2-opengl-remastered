@@ -1204,6 +1204,17 @@ long FitIniFile::readIdULong (const char *varName, DWORD &value)
     return rv;
 }
 
+#if defined(__APPLE__)
+// macos-port: unsigned long is a distinct 64-bit type from uint64_t here.
+long FitIniFile::readIdULong (const char *varName, unsigned long &value)
+{
+    uint64_t tmp = 0;
+    long rv = readIdULong (varName, tmp);
+    value = (unsigned long)tmp;
+    return rv;
+}
+#endif
+
 //---------------------------------------------------------------------------
 long FitIniFile::readIdULong (const char *varName, uint64_t &value)
 {

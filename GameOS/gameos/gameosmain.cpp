@@ -829,6 +829,10 @@ int main(int argc, char** argv)
     // Automation (smoke/diagnostic/visual) is detected via env signals + the
     // explicit MC2_NO_LAUNCHER escape, so headless runs never pop the GUI. If the
     // launcher is missing or fails to start, fall through and run the game.
+    // macos-port: launcher relaunch + env-injection is Windows-only
+    // (mc2-launcher.exe, GetModuleFileName, CreateProcess, _putenv_s). There is
+    // no launcher on mac/linux, so fall straight through to running the game.
+#ifdef _WIN32
     {
         const bool fromLauncher = std::getenv("MC2_LAUNCHED") != nullptr;
         const bool automation =
@@ -935,6 +939,7 @@ int main(int argc, char** argv)
             }
         }
     }
+#endif // _WIN32 (launcher bootstrap + env injection)
 
     // Make stdout line-buffered (was fully buffered on Windows when redirected, hiding
     // output past the last explicit fflush before a crash). Harmless for interactive

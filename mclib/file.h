@@ -17,6 +17,8 @@
 //---------------------------------------------------------------------------
 // Include files
 
+#include <time.h> // macos-port: time_t (getFileMTime); came transitively on Win/Linux
+
 #ifndef DSTD_H
 #include"dstd.h"
 #endif

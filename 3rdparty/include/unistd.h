@@ -1,3 +1,12 @@
+#ifndef _WIN32
+/* macos-port / non-Windows: this vendored file is a Windows-only drop-in
+ * replacement for unistd.h. It sits on the -I path for other 3rdparty headers
+ * (nlohmann, etc.), so on POSIX platforms it must fall through to the real
+ * system unistd.h rather than shadow it. Do NOT define the include guard here,
+ * or glibc's unistd.h (guard _UNISTD_H) would be suppressed. */
+#include_next <unistd.h>
+#else
+
 #ifndef _UNISTD_H
 #define _UNISTD_H    1
 
@@ -50,7 +59,7 @@
 #if 0
 /* should be in some equivalent to <sys/types.h> */
 typedef __int8            int8_t;
-typedef __int16           int16_t; 
+typedef __int16           int16_t;
 typedef __int32           int32_t;
 typedef __int64           int64_t;
 typedef unsigned __int8   uint8_t;
@@ -59,4 +68,6 @@ typedef unsigned __int32  uint32_t;
 typedef unsigned __int64  uint64_t;
 #endif
 
-#endif /* unistd.h  */
+#endif /* _UNISTD_H */
+
+#endif /* _WIN32 */

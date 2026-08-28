@@ -622,7 +622,7 @@ void AG_ellipse_fillOr(PANE *pane, LONG xc, LONG yc, LONG width, LONG height, LO
 	{
 		xorgPane = pane;
 		gColor = (unsigned char)color;
-		VFX_line_draw( pane, xc-width, yc-height, xc+width, yc+height,LD_EXECUTE, &orLineCallback);
+		VFX_line_draw( pane, xc-width, yc-height, xc+width, yc+height,LD_EXECUTE, (void*)&orLineCallback); // macos-port: clang needs explicit fn-ptr->void* cast
 		return;
 	}
 
@@ -835,7 +835,7 @@ void AG_ellipse_fillXor(PANE *pane, LONG xc, LONG yc, LONG width, LONG height, L
 	{
 		xorgPane = pane;
 		gColor = (unsigned char)color;
-		VFX_line_draw( pane, xc-width, yc-height, xc+width, yc+height, LD_EXECUTE, &andLineCallback);
+		VFX_line_draw( pane, xc-width, yc-height, xc+width, yc+height, LD_EXECUTE, (void*)&andLineCallback); // macos-port: clang needs explicit fn-ptr->void* cast
 		return;
 	}
 

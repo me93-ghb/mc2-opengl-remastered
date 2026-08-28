@@ -341,8 +341,7 @@ extern "C" void gos_vfx_mesh_flush(const GosVfxMeshUpload*   uploads,
     // Raw GL calls bypassed the gos render-state cache; force re-sync so the
     // next gos_SetRenderState(sameValue) is not a stale no-op (same guard the
     // particle + mech batchers use).
-    extern void __stdcall gos_InvalidateRenderStateCache();
-    gos_InvalidateRenderStateCache();
+    gos_InvalidateRenderStateCache(); // macos-port: use gameos.hpp extern "C" decl (local re-extern had C++ linkage)
 
     maybeDumpSummary();
 }

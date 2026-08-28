@@ -548,10 +548,16 @@ void freeLocal (SymTableNodePtr idPtr) {
 				// Belt-and-suspenders: even a "plausible" pointer from a foreign .abx
 				// stack-layout mismatch may not actually belong to our heap; an SEH
 				// frame guarantees a bad free can never crash the mission (leak at worst).
+#ifdef _WIN32
 				__try {
 					ABLStackFreeCallback(itemPtr->address);
 				} __except (1 /*EXCEPTION_EXECUTE_HANDLER*/) {
 				}
+#else
+				// macos-port: no SEH on clang. The plausibility checks above already
+				// gate this call, so run it directly (worst case is a leak, not a crash).
+				ABLStackFreeCallback(itemPtr->address);
+#endif
 			}
 		}
 	}

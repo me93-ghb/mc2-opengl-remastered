@@ -1,6 +1,7 @@
 // GameOS/gameos/gos_terrain_patch_stream.h
 #pragma once
 
+#include <cstddef>       // macos-port: offsetof (clang's __builtin_offsetof) for the static_asserts
 #include <cstdint>
 #include <cstring>       // for memcpy in makeRecipeKey
 #include "gameos.hpp"    // for gos_VERTEX, gos_TERRAIN_EXTRA
