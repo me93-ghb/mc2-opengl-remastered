@@ -1205,7 +1205,10 @@ void glsl_program::apply()
             } else {
                 uniformFuncs[puni->type_](puni->index_, puni->num_el_, (float *) puni->data_);
                 if(GL_INVALID_OPERATION == glGetError())
-                    log_error("Error setting variable\n");
+                    // macos-port: name the program + uniform so a failing glUniform
+                    // is diagnosable (was a bare "Error setting variable").
+                    log_error("Error setting variable: prog='%s' uni='%s' loc=%d type=%d num_el=%d\n",
+                        name_.c_str(), puni->name_.c_str(), puni->index_, (int)puni->type_, puni->num_el_);
             }
             puni->is_dirty_ = false;
         }

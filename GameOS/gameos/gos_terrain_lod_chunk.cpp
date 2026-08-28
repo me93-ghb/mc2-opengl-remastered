@@ -1524,6 +1524,31 @@ static void mirrorTerrainPatchUniforms(GLuint src, GLuint dst) {
     }
 }
 
+// macos-port: a shared valid 1x1x1 neutral GL_TEXTURE_2D_ARRAY. Every active
+// sampler2DArray in terrain_lod_chunk.frag (matNormalArray / u_matAlbedoArray /
+// u_transitionMaskArray) MUST have a real 2D_ARRAY texture bound, even when its
+// feature is gated off or its assets are missing: Zink/kosmickrisp rejects the
+// whole terrain glDrawElements with GL_INVALID_OPERATION when an active
+// sampler2DArray is left on texture 0 (desktop GL silently used a black default),
+// which blanked the entire in-mission ground to OOB-fog cloud.
+static GLuint tglc_dummyArray2D() {
+    static GLuint s_tex = 0;
+    if (s_tex == 0) {
+        GLint prev = 0; glGetIntegerv(GL_TEXTURE_BINDING_2D_ARRAY, &prev);
+        glGenTextures(1, &s_tex);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, s_tex);
+        const uint32_t neutral = 0xFF808080u;  // mid-grey / neutral
+        glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, 1, 1, 1, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, &neutral);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_BASE_LEVEL, 0);
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAX_LEVEL, 0);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, (GLuint)prev);
+    }
+    return s_tex;
+}
+
 void gos_TerrainLodChunk_SubmitDrawCommands(
     const TerrainDrawCommand* cmds,
     const float*              skirtDepths,
@@ -1862,6 +1887,7 @@ void gos_TerrainLodChunk_SubmitDrawCommands(
     // normal -> falls back to the smooth base normal, no crash).
     if (s_locMatNormalArray >= 0) {
         GLuint matArrTex = (GLuint)gos_GetTerrainNormalArrayTex();
+        if (matArrTex == 0) matArrTex = tglc_dummyArray2D();  // macos-port: never bind tex 0 to sampler2DArray
         glUniform1i(s_locMatNormalArray, kChunkTexUnitMatNormalArray);
         glActiveTexture(GL_TEXTURE0 + kChunkTexUnitMatNormalArray);
         glBindTexture(GL_TEXTURE_2D_ARRAY, matArrTex);
@@ -1898,10 +1924,14 @@ void gos_TerrainLodChunk_SubmitDrawCommands(
         const bool tmReady = gos_terrain_indirect_isTransitionMaskReady();
         if (s_locUseTransitionMask >= 0)
             glUniform1i(s_locUseTransitionMask, tmReady ? 1 : 0);
-        if (tmReady && s_locTransitionMaskArray >= 0) {
+        // macos-port: bind ALWAYS (real when ready, else neutral dummy) so the
+        // active sampler2DArray is never left on texture 0 (Zink draw reject).
+        if (s_locTransitionMaskArray >= 0) {
+            GLuint tmTex = tmReady ? gos_terrain_indirect_getTransitionMaskArrayGL() : 0;
+            if (tmTex == 0) tmTex = tglc_dummyArray2D();
             glUniform1i(s_locTransitionMaskArray, kChunkTexUnitTransitionMask);
             glActiveTexture(GL_TEXTURE0 + kChunkTexUnitTransitionMask);
-            glBindTexture(GL_TEXTURE_2D_ARRAY, gos_terrain_indirect_getTransitionMaskArrayGL());
+            glBindTexture(GL_TEXTURE_2D_ARRAY, tmTex);
             glActiveTexture(GL_TEXTURE0);
         }
     }
@@ -1936,13 +1966,18 @@ void gos_TerrainLodChunk_SubmitDrawCommands(
         const bool matAlbedoReady = (albTex != 0);
         if (s_locUseMatAlbedo >= 0)
             glUniform1i(s_locUseMatAlbedo, matAlbedoReady ? 1 : 0);
+        // macos-port: ALWAYS bind u_matAlbedoArray (real when ready, else neutral
+        // dummy). It is an active sampler2DArray; leaving it on texture 0 when the
+        // gate is off / BC7 albedo assets are absent makes Zink reject the whole
+        // terrain draw (GL_INVALID_OPERATION) -> blank ground. u_useMatAlbedo=0
+        // already keeps the frag on the byte-identical colormap path.
+        if (s_locMatAlbedoArray >= 0) {
+            glUniform1i(s_locMatAlbedoArray, kChunkTexUnitMatAlbedoArray);
+            glActiveTexture(GL_TEXTURE0 + kChunkTexUnitMatAlbedoArray);
+            glBindTexture(GL_TEXTURE_2D_ARRAY, matAlbedoReady ? albTex : tglc_dummyArray2D());
+            glActiveTexture(GL_TEXTURE0);
+        }
         if (matAlbedoReady) {
-            if (s_locMatAlbedoArray >= 0) {
-                glUniform1i(s_locMatAlbedoArray, kChunkTexUnitMatAlbedoArray);
-                glActiveTexture(GL_TEXTURE0 + kChunkTexUnitMatAlbedoArray);
-                glBindTexture(GL_TEXTURE_2D_ARRAY, albTex);
-                glActiveTexture(GL_TEXTURE0);
-            }
             if (s_locMatAlbedoStrength >= 0) {
                 // env resolved once (mission-constant, REDUNDANT-PASS-HUNT-1
                 // discipline); -1 sentinel = env absent -> JSON -> 0.7.

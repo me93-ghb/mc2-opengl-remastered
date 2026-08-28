@@ -1649,6 +1649,35 @@ class gosRenderer {
             terrain_gravel_albedo_tex_ = texId;
             terrain_gravel_load_tried_ = true;
         }
+        // macos-port: bind a valid NEUTRAL 1x1x9 GL_TEXTURE_2D_ARRAY into
+        // terrain_normal_array_tex_ so the frag's `matNormalArray` sampler2DArray
+        // is never bound to texture 0. Zink/kosmickrisp REJECTS the whole terrain
+        // glDrawElements with GL_INVALID_OPERATION when an active sampler2DArray
+        // has no real texture (desktop GL silently sampled a black default) --
+        // that blanked the ENTIRE in-mission ground to OOB-fog cloud whenever the
+        // per-material normal .tga assets were absent (SPLATTING failed on a
+        // missing data/textures/mat0_normal.tga). Neutral = flat normal
+        // (128,128,255,255); terrain then renders (colormap base, no PBR normal
+        // detail) instead of vanishing.
+        void bindNeutralNormalArrayFallback() {
+            GlPixelStoreGuard g2;
+            if (terrain_normal_array_tex_ != 0) {
+                glDeleteTextures(1, &terrain_normal_array_tex_);
+                terrain_normal_array_tex_ = 0;
+            }
+            glGenTextures(1, &terrain_normal_array_tex_);
+            glBindTexture(GL_TEXTURE_2D_ARRAY, terrain_normal_array_tex_);
+            uint32_t neutral[9];
+            for (int k = 0; k < 9; ++k) neutral[k] = 0xFFFF8080u; // (128,128,255,255)
+            glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, 1, 1, 9, 0,
+                         GL_RGBA, GL_UNSIGNED_BYTE, neutral);
+            glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_BASE_LEVEL, 0);
+            glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAX_LEVEL, 0);
+            glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+            terrain_normal_array_dirty_ = false;
+        }
         void buildTerrainNormalArray() {
             // Require slots 0-4 (rock/grass/dirt/concrete/snow). Slots 5-8 are optional.
             for (int i = 0; i < 5; ++i) {
@@ -1656,8 +1685,10 @@ class gosRenderer {
                     static bool s_warned = false;
                     if (!s_warned) {
                         s_warned = true;
-                        SPEW(("GRAPHICS", "buildTerrainNormalArray: slot %d is zero -- deferring build until slots 0-4 are set\n", i));
+                        SPEW(("GRAPHICS", "buildTerrainNormalArray: slot %d is zero -- neutral fallback (macos-port)\n", i));
                     }
+                    // macos-port: no real per-material normals -> valid neutral array.
+                    bindNeutralNormalArrayFallback();
                     return;
                 }
             }
@@ -6092,7 +6123,7 @@ void gosRenderer::drawShadowBatchTessellated(gos_VERTEX* vertices, int numVerts,
 
     // Displacement texture for shadow TES (dirt normal / array path)
     if (terrainNormalArrayEnabled()) {
-        if (terrain_normal_array_dirty_) buildTerrainNormalArray();
+        if (terrain_normal_array_dirty_ || terrain_normal_array_tex_ == 0) buildTerrainNormalArray();  // macos-port: build neutral fallback when 0
         if (terrain_normal_array_tex_ != 0 && sl.matNormalArray >= 0) {
             glUniform1i(sl.matNormalArray, kTerrainTexUnitNormalArray);
             glActiveTexture(GL_TEXTURE0 + kTerrainTexUnitNormalArray);
@@ -6678,7 +6709,7 @@ void gosRenderer::terrainBindUniformsForPatchStream(gosRenderMaterial* material)
     }
 
     if (terrainNormalArrayEnabled()) {
-        if (terrain_normal_array_dirty_) buildTerrainNormalArray();
+        if (terrain_normal_array_dirty_ || terrain_normal_array_tex_ == 0) buildTerrainNormalArray();  // macos-port: build neutral fallback when 0
         if (terrain_normal_array_tex_ != 0 && tl.matNormalArray >= 0) {
             glUniform1i(tl.matNormalArray, kTerrainTexUnitNormalArray);
             glActiveTexture(GL_TEXTURE0 + kTerrainTexUnitNormalArray);
@@ -6820,7 +6851,7 @@ int gosRenderer::terrainBindThinUniformsForPatchStream(glsl_program* overridePro
     }
     if (tl.tex1 >= 0) glUniform1i(tl.tex1, 0);
     if (terrainNormalArrayEnabled()) {
-        if (terrain_normal_array_dirty_) buildTerrainNormalArray();
+        if (terrain_normal_array_dirty_ || terrain_normal_array_tex_ == 0) buildTerrainNormalArray();  // macos-port: build neutral fallback when 0
         if (terrain_normal_array_tex_ != 0 && tl.matNormalArray >= 0) {
             glUniform1i(tl.matNormalArray, kTerrainTexUnitNormalArray);
             glActiveTexture(GL_TEXTURE0 + kTerrainTexUnitNormalArray);
