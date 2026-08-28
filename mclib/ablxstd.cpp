@@ -1030,7 +1030,21 @@ TypePtr execStandardRoutineCall (SymTableNodePtr routineIdPtr, bool skipOrder) {
 				// any future bogus-pointer case rather than dispatching into
 				// garbage. Log is unconditional because it fires rarely; when it
 				// does, we want the data in o.log automatically.
-				if (cbVal != 0 && cbVal < (uintptr_t)0x00007F0000000000ULL) {
+				// macos-port: the ceiling is platform-specific. 0x00007F...  is a
+				// Windows-x64 heuristic (valid code lives at 0x00007F...). On macOS
+				// ARM64 the executable loads just above a 4GB __PAGEZERO, so every
+				// real callback (getid, setintegermemory, ... at ~0x1_04xx_xxxx) is
+				// FAR below that ceiling and was wrongly skipped — silently breaking
+				// every ABL C-function call in mission scripts. 0x100000000 is the
+				// correct floor: __PAGEZERO is unmapped so all real pointers exceed
+				// it, while 32-bit uninitialised garbage (e.g. 0xDDFD690B) stays
+				// below and is still rejected.
+#if defined(__APPLE__)
+				constexpr uintptr_t kBogusCbCeiling = (uintptr_t)0x0000000100000000ULL;
+#else
+				constexpr uintptr_t kBogusCbCeiling = (uintptr_t)0x00007F0000000000ULL;
+#endif
+				if (cbVal != 0 && cbVal < kBogusCbCeiling) {
 					char err[255];
 					sprintf(err, "[ABL_BAD_CB] key=%d val=%p module=%s line=%d",
 						key, cb, CurModule->getName(), execLineNumber);
