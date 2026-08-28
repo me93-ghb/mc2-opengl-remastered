@@ -486,6 +486,15 @@ void MainMenu::update()
 
 	getButton( MM_MSG_MULTIPLAYER )->disable( true );
 
+	// macos-port: MC2_SKIP_INTRO=1 skips only the intro MOVIE (msft), then lets
+	// the splash-screen sequence play normally: the non-looping intro-layout
+	// animations settle the planet/frame into place and, when they finish,
+	// beginAnim drops the menu in over them -- the retail load order. (Do NOT
+	// also force introOver here; that dropped the menu in before the splash had
+	// played, so the planet only faded in afterwards.)
+	if ( std::getenv("MC2_SKIP_INTRO") && introMovie )
+		skipIntro();
+
 	if ( introMovie )
 	{
 		userInput->mouseOff();

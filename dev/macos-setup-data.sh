@@ -85,6 +85,26 @@ else
     say "data already built ($fst_count .fst, $font_count fonts) — skipping (FORCE_DATA_BUILD=1 to rebuild)"
 fi
 
+# --- 3b. retail .d3f fonts (crisp) ----------------------------------------
+# text_tool's .bmp/.glyph fonts are rasterized from open TTFs and come out
+# aliased/low-res. The retail .d3f fonts (from a licensed MC2 copy) embed an
+# 8-bit-alpha, anti-aliased atlas, and gosFont::load prefers a .d3f over the
+# same-basename .bmp/.glyph. Copy them in (lowercased to match) when the retail
+# Graphics dir is present; MC2_RETAIL_GRAPHICS overrides the default location.
+# Always runs (also upgrades an already-built data dir); harmless when absent.
+RETAIL_GFX="${MC2_RETAIL_GRAPHICS:-$REPO/../MC2/FinalBuild/assets/Graphics}"
+if [ -d "$RETAIL_GFX" ]; then
+    mkdir -p "$BS/assets/graphics"; d3f_n=0
+    for f in "$RETAIL_GFX"/*.d3f; do
+        [ -e "$f" ] || continue
+        lb=$(basename "$f" | tr '[:upper:]' '[:lower:]')
+        cp -f "$f" "$BS/assets/graphics/$lb"; d3f_n=$((d3f_n + 1))
+    done
+    say "imported $d3f_n retail .d3f fonts (crisp anti-aliased) from $RETAIL_GFX"
+else
+    say "no retail .d3f fonts at $RETAIL_GFX — using built .bmp/.glyph (aliased); set MC2_RETAIL_GRAPHICS to enable crisp fonts"
+fi
+
 # --- 4. assemble run/ ------------------------------------------------------
 say "assembling game dir: $RUN"
 rm -rf "$RUN"; mkdir -p "$RUN/data"

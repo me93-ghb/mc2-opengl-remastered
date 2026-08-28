@@ -259,6 +259,22 @@ if(APPLE)
             "Install with 'brew install mesa' or set -DMC2_MACOS_MESA_LIBDIR=<dir>.")
     endif()
     message(STATUS "macos-port: routing GL through Mesa libGL: ${MC2_MACOS_MESA_GL}")
+    # macos-port: the on-screen window path (gos_render.cpp) creates the engine's
+    # GL context directly via Mesa's EGL, so link libEGL + expose its headers.
+    find_library(MC2_MACOS_MESA_EGL NAMES EGL libEGL
+        HINTS "${MC2_MACOS_MESA_LIBDIR}" NO_DEFAULT_PATH)
+    if(NOT MC2_MACOS_MESA_EGL)
+        message(FATAL_ERROR "macos-port: Mesa libEGL not found in ${MC2_MACOS_MESA_LIBDIR}.")
+    endif()
+    # Expose ONLY the EGL + KHR headers (not Mesa's GL/ dir, which would shadow
+    # the system/GLEW <GL/gl.h>). Symlink them into an isolated include root.
+    get_filename_component(MC2_MACOS_MESA_PREFIX "${MC2_MACOS_MESA_LIBDIR}" DIRECTORY)
+    set(MC2_MACOS_EGL_INC "${CMAKE_BINARY_DIR}/macos_egl_include")
+    file(MAKE_DIRECTORY "${MC2_MACOS_EGL_INC}")
+    file(CREATE_LINK "${MC2_MACOS_MESA_PREFIX}/include/EGL" "${MC2_MACOS_EGL_INC}/EGL" SYMBOLIC)
+    file(CREATE_LINK "${MC2_MACOS_MESA_PREFIX}/include/KHR" "${MC2_MACOS_EGL_INC}/KHR" SYMBOLIC)
+    include_directories(AFTER "${MC2_MACOS_EGL_INC}")
+    message(STATUS "macos-port: Mesa EGL for on-screen present: ${MC2_MACOS_MESA_EGL}")
 endif()
 
 list(APPEND CMAKE_MODULE_PATH "${MC2_SOURCE_DIR_CMAKE}/cmake")
@@ -607,7 +623,7 @@ if(MC2_VULKAN_ISLAND)
 endif()
 # macos-port: ${MC2_MACOS_MESA_GL} (empty on non-Apple) is listed before
 # OpenGL::GL so the linker binds GL symbols to Mesa's libGL, not the framework.
-target_link_libraries(mc2 mclib fx_trace particles gosfx mlr stuff gui gameos gameos_main windows ZLIB::ZLIB ${SDL2_LIBRARIES} GLEW::GLEW SDL2_mixer::SDL2_mixer ${ADDITIONAL_LIBS} ${MC2_MACOS_MESA_GL} OpenGL::GL renderworld gameadapters editorbridge imgui gui_runtime)
+target_link_libraries(mc2 mclib fx_trace particles gosfx mlr stuff gui gameos gameos_main windows ZLIB::ZLIB ${SDL2_LIBRARIES} GLEW::GLEW SDL2_mixer::SDL2_mixer ${ADDITIONAL_LIBS} ${MC2_MACOS_MESA_GL} ${MC2_MACOS_MESA_EGL} OpenGL::GL renderworld gameadapters editorbridge imgui gui_runtime)
 
 if(MC2_IMGUI)
     target_compile_definitions(mc2 PRIVATE MC2_IMGUI=1)

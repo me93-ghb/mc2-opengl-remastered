@@ -16,6 +16,21 @@
 #include "vulkan_backend_skeleton.h"
 #endif
 
+// macos-port: on-screen window path. Apple's Cocoa GL caps at 4.1, so the
+// engine renders through Mesa Zink -> kosmickrisp -> Metal on a MANUAL EGL
+// surfaceless/pbuffer context (created here, not by SDL), while a real SDL
+// *cocoa* window supplies input + a Metal SDL_Renderer that presents each
+// finished frame (glReadPixels of FBO 0 -> streaming texture). This keeps the
+// full GL render path unchanged and sidesteps the two-GL-driver symbol clash a
+// blit through Apple GL 4.1 would hit. Gated at runtime on the cocoa video
+// driver, so the offscreen/headless path (smoke, framedump) is untouched.
+// See macos-run.sh's MC2_MACOS_WINDOW mode for the env (curated Vulkan-only
+// DYLD dir keeps Mesa's libGL off SDL's dlopen path, else NSOpenGLContext SIGBUS).
+#if defined(__APPLE__)
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#endif
+
 // FIXME: think how to make it better when different parts need window
 SDL_Window* g_sdl_window = NULL;
 static SDL_GLContext g_sdl_glcontext = NULL;
@@ -44,6 +59,25 @@ struct RenderContext {
    SDL_GLContext glcontext_;
    RenderWindow* render_window_;
 };
+
+#if defined(__APPLE__)
+// macos-port: state for the cocoa-window present path (see header comment).
+// active_ is set true in create_window when SDL selected the cocoa driver.
+struct MacPresent {
+    bool          active_   = false;
+    EGLDisplay    dpy_      = EGL_NO_DISPLAY;
+    EGLContext    ctx_      = EGL_NO_CONTEXT;
+    EGLSurface    surf_     = EGL_NO_SURFACE;
+    EGLConfig     cfg_      = nullptr;
+    SDL_Renderer* renderer_ = nullptr;  // Metal-backed present
+    SDL_Texture*  tex_      = nullptr;  // streaming; engine frame uploaded here
+    int           w_        = 0;        // pbuffer / readback size (fixed)
+    int           h_        = 0;
+    unsigned char* rowbuf_  = nullptr;  // glReadPixels scratch (w*h*4)
+};
+static MacPresent g_mac;
+static bool mac_resize(int w, int h);  // (re)size pbuffer + present texture
+#endif
 
 static void apply_mouse_grab(SDL_Window* window, bool grabbed)
 {
@@ -310,6 +344,19 @@ RenderWindow* create_window(const char* pwinname, int width, int height)
         // works once the SIZE_CHANGED handler refreshes those values.
         // MC2_WINDOW_RESIZABLE=0 restores a fixed window.
         Uint32 winFlags = SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI;
+#if defined(__APPLE__)
+        // macos-port: under the cocoa driver the window presents via Metal, not
+        // an Apple-GL view (that view's updateLayer touches NSOpenGLContext and
+        // SIGBUSes once Mesa is loaded). A Metal window + fixed backbuffer size;
+        // HiDPI/resize deferred so the pbuffer + readback stay one constant size.
+        const bool macWindowed = (SDL_GetCurrentVideoDriver() &&
+                                  strcmp(SDL_GetCurrentVideoDriver(), "cocoa") == 0);
+        if (macWindowed) {
+            g_mac.active_ = true;
+            winFlags = SDL_WINDOW_METAL;
+            SDL_SetHint(SDL_HINT_RENDER_DRIVER, "metal");
+        }
+#endif
         {
             const char* wenv = getenv("MC2_WINDOWED");
             const char* renv = getenv("MC2_WINDOW_RESIZABLE");
@@ -318,7 +365,10 @@ RenderWindow* create_window(const char* pwinname, int width, int height)
             if (windowed && resizable)
                 winFlags |= SDL_WINDOW_RESIZABLE;
         }
-        window = SDL_CreateWindow(pwinname ? pwinname : "--", 
+#if defined(__APPLE__)
+        if (g_mac.active_) winFlags &= ~(Uint32)SDL_WINDOW_RESIZABLE;  // fixed size for now
+#endif
+        window = SDL_CreateWindow(pwinname ? pwinname : "--",
                 SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height, winFlags);
 
         if (!window) {
@@ -347,6 +397,30 @@ RenderWindow* create_window(const char* pwinname, int width, int height)
             SDL_ShowCursor(SDL_ENABLE);
         else
             SDL_ShowCursor(SDL_DISABLE);
+
+#if defined(__APPLE__)
+        // macos-port: Metal-backed present surface for the cocoa window. The
+        // engine's finished frame (FBO 0) is read back and uploaded into a
+        // streaming texture each swap_window. The pbuffer/texture are sized to
+        // the live drawable and re-created on change (see mac_resize) so a
+        // resolution switch or fullscreen toggle stays 1:1 with the window.
+        if (g_mac.active_) {
+            Uint32 rflags = SDL_RENDERER_ACCELERATED;
+            if (getenv("MC2_VSYNC") && getenv("MC2_VSYNC")[0] == '1')
+                rflags |= SDL_RENDERER_PRESENTVSYNC;
+            g_mac.renderer_ = SDL_CreateRenderer(window, -1, rflags);
+            if (!g_mac.renderer_) {
+                fprintf(stderr, "[macos-port] SDL_CreateRenderer(metal) failed: %s\n", SDL_GetError());
+                SDL_DestroyWindow(window);
+                return NULL;
+            }
+            SDL_RendererInfo ri;
+            SDL_GetRendererInfo(g_mac.renderer_, &ri);
+            printf("[macos-port] window present via SDL_Renderer '%s'\n", ri.name ? ri.name : "?");
+            // texture/pbuffer created in init_render_context->mac_resize once the
+            // EGL context exists.
+        }
+#endif
     }
 
     RenderWindow* rw = new RenderWindow();
@@ -365,8 +439,135 @@ void swap_window(RenderWindowHandle h)
 {
     RenderWindow* rw = (RenderWindow*)h;
     assert(rw && rw->window_);
+#if defined(__APPLE__)
+    if (g_mac.active_) {
+        // macos-port: present the engine's finished frame (FBO 0, rendered by
+        // Mesa/Zink) into the cocoa window via the Metal SDL_Renderer. One
+        // glReadPixels + one texture upload per frame -- a CPU round-trip, but
+        // it puts a real interactive window on screen. Zero-copy (shared
+        // IOSurface) is the later optimization if this bottlenecks.
+        // Keep FBO 0 sized to the live drawable: a resolution/fullscreen change
+        // grows the window, and the engine renders at the new size. If it grew,
+        // skip this (mismatched) frame's present -- the next renders 1:1.
+        int cw = 0, ch = 0;
+        SDL_GL_GetDrawableSize(rw->window_, &cw, &ch);
+        if (cw > 0 && ch > 0 && (cw != g_mac.w_ || ch != g_mac.h_)) {
+            mac_resize(cw, ch);
+            return;
+        }
+        const int w = g_mac.w_, h2 = g_mac.h_;
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glReadPixels(0, 0, w, h2, GL_RGBA, GL_UNSIGNED_BYTE, g_mac.rowbuf_);
+        void* dst = nullptr; int pitch = 0;
+        if (SDL_LockTexture(g_mac.tex_, nullptr, &dst, &pitch) == 0) {
+            // glReadPixels is bottom-up; the texture is top-down -> flip rows.
+            for (int y = 0; y < h2; ++y) {
+                memcpy((unsigned char*)dst + (size_t)y * pitch,
+                       g_mac.rowbuf_ + (size_t)(h2 - 1 - y) * w * 4, (size_t)w * 4);
+            }
+            SDL_UnlockTexture(g_mac.tex_);
+        }
+        SDL_RenderClear(g_mac.renderer_);
+        SDL_RenderCopy(g_mac.renderer_, g_mac.tex_, nullptr, nullptr);
+        SDL_RenderPresent(g_mac.renderer_);
+        return;
+    }
+#endif
     SDL_GL_SwapWindow(rw->window_);
 }
+
+#if defined(__APPLE__)
+//==============================================================================
+// macos-port: (re)create the pbuffer surface (= FBO 0 the engine renders into)
+// and the matching present texture at size w x h, then make the context
+// current on the new surface. Called at init and whenever the drawable size
+// changes (resolution switch / fullscreen toggle) so the readback + present
+// stay 1:1 with what the engine renders. Cheap no-op when the size is unchanged.
+static bool mac_resize(int w, int h)
+{
+    if (w <= 0 || h <= 0) return false;
+    if (w == g_mac.w_ && h == g_mac.h_ && g_mac.surf_ != EGL_NO_SURFACE) return true;
+
+    const EGLint pbAttr[] = { EGL_WIDTH, w, EGL_HEIGHT, h, EGL_NONE };
+    EGLSurface ns = eglCreatePbufferSurface(g_mac.dpy_, g_mac.cfg_, pbAttr);
+    if (ns == EGL_NO_SURFACE) {
+        fprintf(stderr, "[macos-port] eglCreatePbufferSurface(%dx%d) failed: 0x%x\n", w, h, eglGetError());
+        return false;
+    }
+    if (!eglMakeCurrent(g_mac.dpy_, ns, ns, g_mac.ctx_)) {
+        fprintf(stderr, "[macos-port] eglMakeCurrent(resize) failed: 0x%x\n", eglGetError());
+        eglDestroySurface(g_mac.dpy_, ns);
+        return false;
+    }
+    EGLSurface old = g_mac.surf_;
+    g_mac.surf_ = ns;
+    if (old != EGL_NO_SURFACE) eglDestroySurface(g_mac.dpy_, old);
+
+    if (g_mac.tex_) SDL_DestroyTexture(g_mac.tex_);
+    g_mac.tex_ = SDL_CreateTexture(g_mac.renderer_, SDL_PIXELFORMAT_ABGR8888,
+                                   SDL_TEXTUREACCESS_STREAMING, w, h);
+    g_mac.rowbuf_ = (unsigned char*)realloc(g_mac.rowbuf_, (size_t)w * h * 4);
+    g_mac.w_ = w; g_mac.h_ = h;
+    printf("[macos-port] present surface sized to %dx%d\n", w, h);
+    return true;
+}
+
+//==============================================================================
+// macos-port: create the engine's real GL context on Mesa (Zink/kosmickrisp)
+// via a MANUAL EGL surfaceless display + a pbuffer surface, so that FBO 0 exists
+// and the engine's final composite lands there for readback. SDL is on the
+// cocoa driver here and would only hand us Apple GL 4.1.
+static bool mac_egl_init(int w, int h)
+{
+    EGLDisplay dpy = EGL_NO_DISPLAY;
+    PFNEGLGETPLATFORMDISPLAYEXTPROC getPlatDpy =
+        (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress("eglGetPlatformDisplayEXT");
+    if (getPlatDpy)
+        dpy = getPlatDpy(EGL_PLATFORM_SURFACELESS_MESA, (void*)EGL_DEFAULT_DISPLAY, nullptr);
+    if (dpy == EGL_NO_DISPLAY)
+        dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (dpy == EGL_NO_DISPLAY) { fprintf(stderr, "[macos-port] no EGL display\n"); return false; }
+
+    EGLint major = 0, minor = 0;
+    if (!eglInitialize(dpy, &major, &minor)) {
+        fprintf(stderr, "[macos-port] eglInitialize failed: 0x%x\n", eglGetError()); return false;
+    }
+    if (!eglBindAPI(EGL_OPENGL_API)) {
+        fprintf(stderr, "[macos-port] eglBindAPI(GL) failed\n"); return false;
+    }
+
+    const EGLint cfgAttr[] = {
+        EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+        EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
+        EGL_DEPTH_SIZE, 24, EGL_STENCIL_SIZE, 8,
+        EGL_NONE
+    };
+    EGLConfig cfg = nullptr; EGLint ncfg = 0;
+    if (!eglChooseConfig(dpy, cfgAttr, &cfg, 1, &ncfg) || ncfg < 1) {
+        fprintf(stderr, "[macos-port] eglChooseConfig failed (n=%d err=0x%x)\n", ncfg, eglGetError());
+        return false;
+    }
+
+    EGLint ctxAttr[16]; int ai = 0;
+    ctxAttr[ai++] = EGL_CONTEXT_MAJOR_VERSION; ctxAttr[ai++] = 4;
+    ctxAttr[ai++] = EGL_CONTEXT_MINOR_VERSION; ctxAttr[ai++] = 3;
+    ctxAttr[ai++] = EGL_CONTEXT_OPENGL_PROFILE_MASK;
+    ctxAttr[ai++] = EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT;
+    if (getenv("MC2_GL_DEBUG")) { ctxAttr[ai++] = EGL_CONTEXT_OPENGL_DEBUG; ctxAttr[ai++] = EGL_TRUE; }
+    ctxAttr[ai++] = EGL_NONE;
+    EGLContext ctx = eglCreateContext(dpy, cfg, EGL_NO_CONTEXT, ctxAttr);
+    if (ctx == EGL_NO_CONTEXT) {
+        fprintf(stderr, "[macos-port] eglCreateContext(4.3 core) failed: 0x%x\n", eglGetError());
+        return false;
+    }
+    g_mac.dpy_ = dpy; g_mac.ctx_ = ctx; g_mac.cfg_ = cfg;
+    if (!mac_resize(w, h)) return false;  // creates surface + makes current + texture
+    printf("[macos-port] EGL %d.%d GL context current (pbuffer %dx%d, vendor=%s)\n",
+           major, minor, w, h, eglQueryString(dpy, EGL_VENDOR));
+    return true;
+}
+#endif
 
 //==============================================================================
 RenderContextHandle init_render_context(RenderWindowHandle render_window)
@@ -374,7 +575,18 @@ RenderContextHandle init_render_context(RenderWindowHandle render_window)
     RenderWindow* rw = (RenderWindow*)render_window;
     assert(rw && rw->window_);
 
-    SDL_GLContext glcontext = SDL_GL_CreateContext(rw->window_);
+    SDL_GLContext glcontext = NULL;
+#if defined(__APPLE__)
+    if (g_mac.active_) {
+        int dw = 0, dh = 0;
+        SDL_GL_GetDrawableSize(rw->window_, &dw, &dh);
+        if (dw <= 0 || dh <= 0) { dw = rw->width_; dh = rw->height_; }
+        if (!mac_egl_init(dw, dh)) return NULL;
+        glcontext = (SDL_GLContext)g_mac.ctx_;  // non-null sentinel for downstream
+    } else
+#endif
+    {
+    glcontext = SDL_GL_CreateContext(rw->window_);
     if (!glcontext ) {
         fprintf(stderr, "SDL_GL_CreateContext(): %s\n", SDL_GetError());
         return NULL;
@@ -383,13 +595,19 @@ RenderContextHandle init_render_context(RenderWindowHandle render_window)
     if (SDL_GL_MakeCurrent(rw->window_, glcontext) < 0) {
         SDL_GL_DeleteContext(glcontext);
         return NULL;
-    } 
+    }
+    }
 
     // MC2_VSYNC: "1" forces vsync on, "0" or unset leaves it off.
     // Off by default so a GPU that misses 60 Hz is not rounded down
     // to 30/20/15 FPS.
     const char* vsync_env = getenv("MC2_VSYNC");
     const bool vsync_on = (vsync_env && vsync_env[0] == '1');
+#if defined(__APPLE__)
+    // macos-port: present-side vsync is owned by the SDL_Renderer flags (set in
+    // create_window); there's no SDL GL swap interval on the manual EGL path.
+    if (!g_mac.active_)
+#endif
     SDL_GL_SetSwapInterval(vsync_on ? 1 : 0);
     printf("[VSYNC] MC2_VSYNC=%s -- vsync %s.\n",
            vsync_env ? vsync_env : "(unset, default 0)",
@@ -560,6 +778,23 @@ void destroy_render_context(RenderContextHandle rc_handle)
     RenderContext* rc = (RenderContext*)rc_handle;
     assert(rc);
 
+#if defined(__APPLE__)
+    if (g_mac.active_) {
+        if (g_mac.dpy_ != EGL_NO_DISPLAY) {
+            eglMakeCurrent(g_mac.dpy_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+            if (g_mac.ctx_  != EGL_NO_CONTEXT) eglDestroyContext(g_mac.dpy_, g_mac.ctx_);
+            if (g_mac.surf_ != EGL_NO_SURFACE) eglDestroySurface(g_mac.dpy_, g_mac.surf_);
+            eglTerminate(g_mac.dpy_);
+        }
+        if (g_mac.tex_)      SDL_DestroyTexture(g_mac.tex_);
+        if (g_mac.renderer_) SDL_DestroyRenderer(g_mac.renderer_);
+        free(g_mac.rowbuf_);
+        g_mac = MacPresent();
+        g_sdl_glcontext = NULL;
+        delete rc;
+        return;
+    }
+#endif
     SDL_GL_DeleteContext(rc->glcontext_);
     g_sdl_glcontext = NULL;
     delete rc;
@@ -574,6 +809,12 @@ void make_current_context(RenderContextHandle ctx_h)
     RenderWindow* rw = rc->render_window_;
     assert(rw && rw->window_);
 
+#if defined(__APPLE__)
+    if (g_mac.active_) {
+        eglMakeCurrent(g_mac.dpy_, g_mac.surf_, g_mac.surf_, g_mac.ctx_);
+        return;
+    }
+#endif
     SDL_GL_MakeCurrent(rw->window_, rc->glcontext_);
 }
 

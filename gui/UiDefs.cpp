@@ -1630,6 +1630,19 @@ struct UiDefs::GameOSPage::Impl {
 
 bool UiDefs::gameOsUiDefsEnabled()
 {
+    // macos-port: the data/defs GameOS UI page renders exclusively through the
+    // ImGui-backed GuiRuntime layer (GuiRuntime::DrawUi*/NewFrame/Render). On a
+    // build without ImGui (MC2_IMGUI=OFF) that layer never initializes, so a
+    // loaded defs page black-clears the legacy layer and then draws nothing --
+    // e.g. a completely blank main menu. Fall back to the legacy GameOS FIT path
+    // whenever ImGui is not up. g_imguiInitialized is false on non-ImGui builds
+    // and becomes true in GuiRuntime::Init() (run once after the GL context is
+    // created, before any LogisticsScreen loads its defs page), so this gates
+    // correctly on both build flavors without depending on the compile define
+    // reaching this translation unit.
+    if (!g_imguiInitialized)  // declared in GuiRuntime.h (global scope)
+        return false;
+
     // The data/defs GameOS UI path is the replacement path, not an opt-in demo.
     // Set MC2_GAMEOS_UI_DEFS=0/false/off/no to force the legacy GameOS FIT path
     // when comparing behavior or bisecting UI regressions.
