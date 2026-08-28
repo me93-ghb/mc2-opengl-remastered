@@ -21,7 +21,15 @@ namespace MidLevelRenderer {
 	//
 	public:
 		GOSImagePool();
-		~GOSImagePool();
+		// macos-port: MUST be virtual. GOSImagePool is abstract (LoadImage=0)
+		// and MLRTexturePool::~MLRTexturePool does `delete imagePool` through
+		// this base pointer (imagePool is really a TGAFilePool). With a
+		// non-virtual dtor that delete calls GOSImagePool's complete-object
+		// destructor, which clang emits as `brk #1` for an abstract class
+		// (it can never be a most-derived object) -> SIGTRAP on teardown.
+		// MSVC tolerated the UB; clang does not. Virtual dtor dispatches to
+		// the concrete TGAFilePool. Upstreamable correctness fix.
+		virtual ~GOSImagePool();
 
 	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	// Image handling
