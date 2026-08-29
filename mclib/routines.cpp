@@ -200,7 +200,14 @@ bool RollDice (long percent)
 	}
 	if (s_det)
 		return (((gos_rand()*100)>>15) < percent);
-	return (((rand()*100)>>15) < percent);			// Optimized the % out
+	// macos-port: mask to 15 bits. This `>>15` shaping assumes Windows' 15-bit
+	// rand() ([0,32767]); on macOS/BSD RAND_MAX is 31-bit, so `rand()*100`
+	// overflows a signed int (UB) and `(rand()*100)>>15` can go NEGATIVE. Then
+	// `< percent` mis-fires: on a FLAT map angle~0 -> RollDice(0), and a negative
+	// LHS < 0 is TRUE, so EVERY elevated-shooter roll became a head shot (cockpit
+	// one-shots wiping the team). Masking rand() to [0,32767] restores the exact
+	// Windows shaping (no-op there) and the correct 0..99 range here.
+	return (((((long)rand() & 0x7FFF) * 100) >> 15) < percent);
 }
 
 
