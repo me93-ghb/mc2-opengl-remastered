@@ -264,28 +264,31 @@ void aButton::makeUVs( gos_VERTEX* vertices, int State, aButton::aButtonData& da
 		if ( data.fileWidth && data.fileHeight ) // will crash if 0
 		{
 
+			// macos-port: half-texel inset via guiUVSpan (was the +0.1-texel
+			// bias); see asystem.h for the pink-atlas-filler rationale.
+			float u0, u1, v0, v1;
+			guiUVSpan( left, right, (float)data.fileWidth, u0, u1 );
+			guiUVSpan( top, bottom, (float)data.fileHeight, v0, v1 );
+
 			if ( data.textureRotated )
 			{
-				vertices[0].u = right/(float)data.fileWidth + (.1f / (float)data.fileWidth);;
-				vertices[1].u = left/(float)data.fileWidth + (.1f / (float)data.fileWidth);;
-				vertices[2].u = left/(float)data.fileWidth + (.1f / (float)data.fileWidth);
-				vertices[3].u = right/(float)data.fileWidth + (.1f / (float)data.fileWidth);
+				vertices[0].u = u1;
+				vertices[1].u = u0;
+				vertices[2].u = u0;
+				vertices[3].u = u1;
 
-				vertices[0].v = top/(float)data.fileHeight + (.1f / (float)data.fileWidth);;
-				vertices[1].v = top/(float)data.fileHeight + (.1f / (float)data.fileWidth);;
-				vertices[2].v = bottom/(float)data.fileHeight + (.1f / (float)data.fileHeight);;
-				vertices[3].v = bottom/(float)data.fileHeight + (.1f / (float)data.fileHeight);;
+				vertices[0].v = v0;
+				vertices[1].v = v0;
+				vertices[2].v = v1;
+				vertices[3].v = v1;
 			}
 			else
-
 			{
-				{
-					vertices[0].u = vertices[1].u =  left/(float)data.fileWidth + (.1f / (float)data.fileWidth);;
-					vertices[2].u = vertices[3].u = right/(float)data.fileWidth + (.1f / (float)data.fileWidth);
+				vertices[0].u = vertices[1].u = u0;
+				vertices[2].u = vertices[3].u = u1;
 
-					vertices[0].v = vertices[3].v = top/(float)data.fileHeight + (.1f / (float)data.fileWidth);;
-					vertices[1].v = vertices[2].v = bottom/(float)data.fileHeight + (.1f / (float)data.fileHeight);
-				}
+				vertices[0].v = vertices[3].v = v0;
+				vertices[1].v = vertices[2].v = v1;
 			}
 		}
 }

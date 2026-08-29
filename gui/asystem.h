@@ -78,10 +78,27 @@ extern long helpTextHeaderID;
 class aBaseObject
 {
 public:
-	
+
 	virtual void render(){}
 	virtual void update(){}
 };
+
+// macos-port: normalize a pixel-space UV span [a,b) with a half-texel inset.
+// Replaces the legacy +0.1-texel bias, which pushed the max UV into the
+// NEIGHBORING atlas texel: exact at the original 800x600 1:1 mapping, but under
+// the non-integer window upscale the edge samples land in the adjacent atlas
+// region -- MC2's UI art pads those with opaque hot pink (226,0,127), producing
+// the 1px pink seams/slivers on every logistics screen. A half-texel inset
+// samples identical texels at 1:1 (NEAREST) and can never cross the crop
+// boundary at any scale or filter. Spans under one texel collapse to their
+// center instead of inverting.
+inline void guiUVSpan( float a, float b, float dim, float& oa, float& ob )
+{
+	float dir = ( b >= a ) ? 1.f : -1.f;
+	float inset = ( dir * ( b - a ) < 1.f ) ? dir * ( b - a ) * 0.5f : 0.5f;
+	oa = ( a + dir * inset ) / dim;
+	ob = ( b - dir * inset ) / dim;
+}
 // base class aObject definition
 class aObject : public aBaseObject
 {

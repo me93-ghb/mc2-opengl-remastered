@@ -387,6 +387,14 @@ void aObject::init(FitIniFile* file, const char* blockName, DWORD neverFlush)
 
 	{
 		ZoneScopedN("aObject::init fit setupVertices");
+		// macos-port: half-texel UV inset (guiUVSpan) replaces the legacy
+		// +0.1-texel bias -- see asystem.h for the pink-atlas-filler rationale.
+		float u0 = 0.f, u1 = 0.f, v0 = 0.f, v1 = 0.f;
+		if ( fileWidth )
+		{
+			guiUVSpan( (float)u, (float)(u + uWidth), (float)fileWidth, u0, u1 );
+			guiUVSpan( (float)v, (float)(v + vHeight), (float)fileWidth, v0, v1 );
+		}
 		for ( int k = 0; k < 4; k++ )
 		{
 			location[k].argb = 0xffffffff;
@@ -395,19 +403,15 @@ void aObject::init(FitIniFile* file, const char* blockName, DWORD neverFlush)
 			location[k].y = y;
 			location[k].z = 0.f;
 			location[k].rhw = .5;
-			if ( fileWidth )
-				location[k].u = (float)u/(float)fileWidth + (.1f / (float)fileWidth);
-			if ( fileWidth )
-				location[k].v = (float)v/(float)fileWidth + (.1f / (float)fileWidth);
+			location[k].u = u0;
+			location[k].v = v0;
 		}
 
 		location[3].x = location[2].x = x + width;
 		location[2].y = location[1].y = y + height;
 
-		if ( fileWidth )
-			location[2].u = location[3].u = ((float)(u + uWidth))/((float)fileWidth) + (.1f / (float)fileWidth);
-		if ( fileWidth )
-			location[1].v = location[2].v = ((float)(v + vHeight))/((float)fileWidth) + (.1f / (float)fileWidth);
+		location[2].u = location[3].u = u1;
+		location[1].v = location[2].v = v1;
 
 		// Opt-in 1-pixel destination-rect overlap for chrome widgets so
 		// upscaler-softened edges between adjacent panels blend into each
@@ -424,16 +428,15 @@ void aObject::init(FitIniFile* file, const char* blockName, DWORD neverFlush)
 
 		if ( bRotated )
 		{
+			location[0].u = u1;
+			location[1].u = u0;
+			location[2].u = u0;
+			location[3].u = u1;
 
-			location[0].u = (u + uWidth)/(float)fileWidth + (.1f / (float)fileWidth);;
-			location[1].u = u/(float)fileWidth + (.1f / (float)fileWidth);;
-			location[2].u = u/(float)fileWidth + (.1f / (float)fileWidth);
-			location[3].u = (u + uWidth)/(float)fileWidth + (.1f / (float)fileWidth);
-
-			location[0].v = v/(float)fileWidth + (.1f / (float)fileWidth);;
-			location[1].v = v/(float)fileWidth + (.1f / (float)fileWidth);;
-			location[2].v = (v + vHeight)/(float)fileWidth + (.1f / (float)fileWidth);;
-			location[3].v = (v + vHeight)/(float)fileWidth + (.1f / (float)fileWidth);;
+			location[0].v = v0;
+			location[1].v = v0;
+			location[2].v = v1;
+			location[3].v = v1;
 		}
 	}
 
@@ -801,15 +804,20 @@ void aObject::setColor( uint32_t newColor, bool bRecurse )
 
 void	aObject::setUVs( float u1, float v1, float u2, float v2 )
 {
+	// macos-port: half-texel inset via guiUVSpan (was the +0.1-texel bias);
+	// see asystem.h for the pink-atlas-filler rationale.
 	// U-axis: always divided by fileWidth (horizontal texture dimension).
-	location[0].u = location[1].u = u1/fileWidth + (.1f / (float)fileWidth);
-	location[2].u = location[3].u = u2/fileWidth + (.1f / (float)fileWidth);
+	float a, b;
+	guiUVSpan( u1, u2, fileWidth, a, b );
+	location[0].u = location[1].u = a;
+	location[2].u = location[3].u = b;
 	// V-axis: divided by fileHeight when set (non-square atlas), else fileWidth.
 	// This lets a 256x512 atlas address rows 0-16 while leaving square atlases
 	// (fileHeight==0) fully backward-compatible.
 	float fh = (fileHeight > 0.f) ? fileHeight : fileWidth;
-	location[0].v = location[3].v = v1/fh + (.1f / fh);
-	location[1].v = location[2].v = v2/fh + (.1f / fh);
+	guiUVSpan( v1, v2, fh, a, b );
+	location[0].v = location[3].v = a;
+	location[1].v = location[2].v = b;
 }
 
 void aObject::removeAllChildren( bool bDelete)
