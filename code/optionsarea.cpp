@@ -244,15 +244,16 @@ void OptionsXScreen::init(FitIniFile* file)
 void OptionsXScreen::render()
 {
 	GUI_RECT rect = { 0, 0, Environment.screenWidth, Environment.screenHeight };
-	// Draw black backgrounds immediately (IsHUD=0) so camera.render() inside
-	// tabAreas[0] can overdraw them in the GL framebuffer.  These must NOT go
-	// through the HUD batch: flushHUDBatch runs after camera.render() and
-	// would paint them on top of the 3D mech, hiding it.
-	gos_SetRenderState( gos_State_IsHUD, 0 );
+	// macos-port: draw the black backgrounds through the normal HUD batch (as
+	// the original did). The old IsHUD=0 immediate draw predates the FBO-based
+	// camera preview (the paint preview now composites via ImGui or, on this
+	// port, a HUD-batched quad, so nothing needs to overdraw these in the GL
+	// framebuffer) -- and an immediate black rect layers UNDER the deferred HUD
+	// batch, letting the still-rendering logistics screen behind the dialog
+	// bleed through its interior (stale-screen ghosting in the options frames).
 	drawRect( rect, 0xff000000 );
 	rects[1].setColor( 0xff000000 );
 	rects[1].render();
-	gos_SetRenderState( gos_State_IsHUD, 1 );
 	if ( curTab < 2 )
 		tabAreas[curTab]->render();
 	rects[1].setColor( 0 );
