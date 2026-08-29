@@ -89,6 +89,11 @@ void LogisticsMechDisplay::render(int xOffset, int yOffset)
 		float px = 0, py = 0, pw = 0, ph = 0;
 		if ( getDefsElementScreenRect( "game.mcl_mechinfo.rect.rect_to_fit_mech_animation_into", px, py, pw, ph ) )
 			mechCamera.drawPreviewToPanel( px, py, pw, ph );
+		else
+			// macos-port: no defs page -- the legacy composite inside
+			// drawPreviewToPanel uses the camera's own bounds, so the panel
+			// rect args are unused.
+			mechCamera.drawPreviewToPanel( 0, 0, 0, 0 );
 	}
 
 	for ( int i = 0; i < 3; i++ )

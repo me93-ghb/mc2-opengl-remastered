@@ -2981,6 +2981,9 @@ void __stdcall gos_SetHudResClampEnabled( bool enabled );
 void __stdcall gos_BeginCameraPreviewRender();
 void __stdcall gos_EndCameraPreviewRender();
 unsigned int __stdcall gos_GetCameraPreviewTexture();   // GLuint, avoids a GL include here
+// macos-port: same texture as a gos handle, for the legacy (non-ImGui) HUD-quad
+// composite path in SimpleCamera::drawPreviewToPanel.
+DWORD __stdcall gos_GetCameraPreviewGosTexture();
 
 //
 // This API sets the current gamma correction value. The default value is 1.0 (no correction applied). All color values are effected by (value/255 ^ (1.0/gamma)).

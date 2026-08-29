@@ -465,33 +465,69 @@ void SimpleCamera::render(long xOffset, long yOffset)
 // image isn't upside down in ImGui's top-left-origin image space.
 void SimpleCamera::drawPreviewToPanel( float panelX, float panelY, float panelW, float panelH ) const
 {
-#ifdef MC2_IMGUI
 	const unsigned int tex = gos_GetCameraPreviewTexture();
 	const float u1 = bounds[0] / 800.f;
 	const float u2 = bounds[2] / 800.f;
 	const float v1 = 1.f - bounds[1] / 600.f;   // top    -> flipped
 	const float v2 = 1.f - bounds[3] / 600.f;   // bottom -> flipped
-	if ( getenv("MC2_LOG_PREVIEW") )
-	{
-		FILE* f = fopen("preview_debug.log","a");
-		if (f) {
-			fprintf(f,"[PREVIEW] drawPreviewToPanel tex=%u panel=[%.1f,%.1f,%.1f,%.1f] uv=[%.3f,%.3f,%.3f,%.3f] readyForUi=%d\n",
-				tex, panelX, panelY, panelW, panelH, u1, v1, u2, v2, (int)GuiRuntime::IsReadyForUiText());
-			fflush(f); fclose(f);
-		}
-	}
 	if ( !tex )
 		return;
 
-	bool ok = GuiRuntime::DrawUiImage( tex, panelX, panelY, panelW, panelH, u1, v1, u2, v2, 0xffffffff );
+	bool ok = false;
+#ifdef MC2_IMGUI
+	ok = GuiRuntime::DrawUiImage( tex, panelX, panelY, panelW, panelH, u1, v1, u2, v2, 0xffffffff );
 	if ( getenv("MC2_LOG_PREVIEW") )
 	{
 		FILE* f = fopen("preview_debug.log","a");
 		if (f) { fprintf(f,"[PREVIEW] DrawUiImage returned %d\n", (int)ok); fflush(f); fclose(f); }
 	}
 #else
+	// macos-port: ImGui is compiled out (MC2_IMGUI=OFF) -- the panel args are
+	// only meaningful for the ImGui composite; the legacy path below uses the
+	// camera's own bounds.
 	(void)panelX; (void)panelY; (void)panelW; (void)panelH;
 #endif
+	if ( !ok )
+	{
+		// macos-port: no ImGui frame to composite into (GuiRuntime never
+		// initializes on this port), so route the preview through the ordinary
+		// HUD-batched gos quad path instead. Drawn at the camera's legacy
+		// 800x600 bounds -- the HUD batch preserves draw order against the
+		// screen's other 2D art and applies the same canvas scaling, so the
+		// caller's real-resolution panel args are not needed here.
+		DWORD gosTex = gos_GetCameraPreviewGosTexture();
+		if ( gosTex )
+		{
+			gos_VERTEX v[4];
+			for ( int i = 0; i < 4; ++i )
+			{
+				v[i].argb = 0xffffffff;
+				v[i].frgb = 0;
+				v[i].rhw = .5f;
+				v[i].z = 0.f;
+			}
+			v[0].x = v[1].x = bounds[0];
+			v[2].x = v[3].x = bounds[2];
+			v[0].y = v[3].y = bounds[1];
+			v[1].y = v[2].y = bounds[3];
+			v[0].u = v[1].u = u1;
+			v[2].u = v[3].u = u2;
+			v[0].v = v[3].v = v1;
+			v[1].v = v[2].v = v2;
+
+			gos_PushRenderStates();
+			gos_SetRenderState( gos_State_Texture, gosTex );
+			gos_SetRenderState( gos_State_AlphaMode, gos_Alpha_OneZero );
+			gos_SetRenderState( gos_State_AlphaTest, 0 );
+			gos_SetRenderState( gos_State_Filter, gos_FilterBiLinear );
+			gos_SetRenderState( gos_State_TextureAddress, gos_TextureClamp );
+			gos_SetRenderState( gos_State_TextureMapBlend, gos_BlendModulate );
+			gos_SetRenderState( gos_State_ZCompare, 0 );
+			gos_SetRenderState( gos_State_ZWrite, 0 );
+			gos_DrawQuads( v, 4 );
+			gos_PopRenderStates();
+		}
+	}
 }
 
 ////////////////////////////////////////////////

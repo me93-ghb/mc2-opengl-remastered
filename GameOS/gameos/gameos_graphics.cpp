@@ -9082,6 +9082,35 @@ GLuint __stdcall gos_GetCameraPreviewTexture()
     return s_camPreviewColorTex;
 }
 
+// macos-port: gos-handle view of the preview color attachment, so the legacy
+// (non-ImGui) UI can composite the preview through the ordinary HUD-batched
+// gos_DrawQuads path -- the batch preserves draw order against the rest of the
+// screen's 2D art and applies the same HUD canvas scaling. Wraps the GL name
+// once (same prebuilt-Texture wrap gos_NewCompressedTexture2D uses) and
+// re-wraps if the FBO is ever recreated (MC2_PREVIEW_FBO_SCALE change).
+DWORD __stdcall gos_GetCameraPreviewGosTexture()
+{
+    static DWORD  s_handle  = 0;
+    static GLuint s_wrapped = 0;
+    if (!s_camPreviewColorTex || !g_gos_renderer)
+        return 0;
+    if (s_handle && s_wrapped == s_camPreviewColorTex)
+        return s_handle;
+
+    Texture tex;
+    tex.id = s_camPreviewColorTex;
+    tex.w = s_camPreviewW;
+    tex.h = s_camPreviewH;
+    tex.fmt_ = TF_NONE;
+    tex.type_ = TT_2D;
+    tex.format = GL_RGBA8;
+    tex.has_mipmaps = false;
+
+    s_handle  = g_gos_renderer->addTexture(new gosTexture(tex, gos_Texture_Solid, "campreview_wrap"));
+    s_wrapped = s_camPreviewColorTex;
+    return s_handle;
+}
+
 // Terrain tessellation API
 void __stdcall gos_SetTerrainTessParams(float level, float near_dist, float far_dist) {
     if (g_gos_renderer) g_gos_renderer->setTerrainTessParams(level, near_dist, far_dist);
