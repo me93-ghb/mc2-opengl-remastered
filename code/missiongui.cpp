@@ -2101,13 +2101,16 @@ void MissionInterfaceManager::updateTarget( bool bGui)
 				target = NULL;
 		}
 		
-		// STABILITY: a disabled mech may be mid-teardown (null/partial appearance,
-		// stale vtable) — the virtual derefs below (getDescription / getAppearance)
-		// then jump through a freed slot and crash (EXEC at 0x0). This surfaces under
-		// cheat-mode soak mass-disable but is a latent hazard whenever a hovered mech
-		// dies the same frame. Don't compute hover info for a disabled target.
-		if ( target && target->isDisabled() )
-			target = 0;
+		// macos-port: do NOT null a live disabled mover here. The prior broad guard
+		// `if (target->isDisabled()) target = 0;` was added to dodge a mid-teardown
+		// crash, but it killed the hover/command target for EVERY disabled mech --
+		// so canRecover() always saw target==NULL and SALVAGE was impossible (you
+		// could never deploy a salvage craft on a downed mech). The freed-object case
+		// is already covered by the watch-ID liveness check above; the only remaining
+		// mid-teardown hazard is a null/partial appearance, guarded directly at the
+		// getAppearance() deref below. Disabled NON-movers are still dropped further
+		// down (isDisabled() && !isMover()), matching the original intent that a
+		// disabled MECH stays selectable/salvageable.
 
 		if ( target )
 		{
@@ -2119,10 +2122,15 @@ void MissionInterfaceManager::updateTarget( bool bGui)
 			int descID = target->getDescription();
 			if ( descID != -1 )
 			{
-				int nameID = target->getAppearance()->getObjectNameId();
-
-				helpTextHeaderID = nameID;
-				helpTextID = descID;
+				// macos-port: a mid-teardown disabled mech can have a null appearance;
+				// guard the deref (this replaces the old blanket "null the target if
+				// disabled" that broke salvage).
+				AppearancePtr ap = target->getAppearance();
+				if ( ap )
+				{
+					helpTextHeaderID = ap->getObjectNameId();
+					helpTextID = descID;
+				}
 			}
 			if ( target->isDestroyed() )
 			{
