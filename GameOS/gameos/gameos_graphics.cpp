@@ -7311,10 +7311,19 @@ void gosRenderer::drawText(const char* text) {
     int prev_texture = getRenderState(gos_State_Texture);
     int prev_filter  = getRenderState(gos_State_Filter);
     int prev_addr    = getRenderState(gos_State_TextureAddress);
+    // macos-port: gos text is a 2D screen overlay and must NOT be depth-tested
+    // against the world. This immediate path runs during the WORLD phase (for
+    // FloatHelp mech/vehicle names + "No Pilot"), where ZCompare is still on
+    // (GL_LEQUAL) from terrain -- so the label rendered BEHIND the ground and was
+    // invisible. It only appeared when an unrelated event (a unit death) happened
+    // to leave depth-test off. Disable ZCompare around the text draw (the HUD-
+    // batched path already draws text with depth off) and restore it after.
+    int prev_zcompare = getRenderState(gos_State_ZCompare);
 
     setRenderState(gos_State_Texture, tex_id);
     setRenderState(gos_State_Filter, gos_FilterNone);
     setRenderState(gos_State_TextureAddress, gos_TextureClamp);
+    setRenderState(gos_State_ZCompare, 0);
 
     // for now draw anyway because no render state saved for draw calls
     applyRenderStates();
@@ -7336,7 +7345,22 @@ void gosRenderer::drawText(const char* text) {
     //ta.WrapType
     //ta.DisableEmbeddedCodes
 
-    mat->setTransform(projection_);
+    // macos-port: gos text is a 2D screen overlay -- gos_TextSetPosition feeds
+    // screen-PIXEL coords, so it must draw through the screen-pixel->NDC ortho,
+    // NOT whatever projection_ currently holds. This immediate (non-HUD-batched)
+    // path is taken when gos_State_IsHUD is off, which is the case for FloatHelp
+    // (mech/vehicle names + "No Pilot") because FloatHelp::renderAll() runs during
+    // the WORLD phase (Mission::render, before the HUD phase sets ortho). With the
+    // raw projection_ (the camera/world matrix from eye->render) the text quads
+    // landed off-screen -> the label was invisible (it only flashed when an
+    // unrelated event happened to leave ortho set). The HUD-batched path already
+    // renders text with ortho, so this just restores the same 2D contract here.
+    // Ortho matches gosRenderer::handleEvents (the width_/height_ canvas mapping).
+    mat4 textProj(2.0f / (float)width_, 0, 0.0f, -1.0f,
+                  0, -2.0f / (float)height_, 0.0f, 1.0f,
+                  0, 0, 1.0f, 0.0f,
+                  0, 0, 0.0f, 1.0f);
+    mat->setTransform(textProj);
     mat->setFogColor(fog_color_);
     text_->draw(mat);
     text_->rewind();
@@ -7344,6 +7368,7 @@ void gosRenderer::drawText(const char* text) {
     setRenderState(gos_State_Texture, prev_texture);
     setRenderState(gos_State_Filter, prev_filter);
     setRenderState(gos_State_TextureAddress, prev_addr);
+    setRenderState(gos_State_ZCompare, prev_zcompare);  // macos-port: restore depth-test
 
     afterDrawCall();
 }
