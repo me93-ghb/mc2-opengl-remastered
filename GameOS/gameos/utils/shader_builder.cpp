@@ -1193,8 +1193,27 @@ void glsl_program::apply()
     ZoneScopedN("Shader.Apply");
     glUseProgram(shp_);
 
-    UniArr_t::iterator it = uniforms_.begin(); 
-    UniArr_t::iterator end = uniforms_.end(); 
+    // macos-port: drain errors queued by EARLIER GL calls so the per-uniform
+    // check below reports only its own glUniform's error. Without this, the
+    // first dirty uniform of the first apply() after any erroring call took
+    // the blame (e.g. 'shoreline'/'screenSize' spammed every frame for an
+    // error raised elsewhere). Rate-limited note keeps the signal visible.
+    {
+        bool preErr = false;
+        while (glGetError() != GL_NO_ERROR) preErr = true;
+        if (preErr) {
+            static int s_preErrLogged = 0;
+            if (s_preErrLogged < 8) {
+                ++s_preErrLogged;
+                log_error("Pre-existing GL error drained before apply of prog='%s' "
+                          "(raised by an earlier GL call, not this program)\n",
+                          name_.c_str());
+            }
+        }
+    }
+
+    UniArr_t::iterator it = uniforms_.begin();
+    UniArr_t::iterator end = uniforms_.end();
     for(;it!=end;++it)
     {
         glsl_uniform* puni = it->second;
