@@ -2899,7 +2899,20 @@ long Mech3DAppearance::render (long depthFixup)
 			// draw below runs. The GPU batcher flushes with the world snapshot /
 			// terrain MVP and would draw the preview mech off the UI viewport.
 			const bool previewContext = (g_mechPreviewRenderDepth > 0);
-			if (g_useGpuMechs && !mechGpuCullSkip && g_drawMechs && !previewContext) {
+			// macos-port: don't GPU-submit the body of a sensor-only contact
+			// (sensorLevel 1..4 -- the exact inverse of the diamond gate below at
+			// "if ((sensorLevel > 0) && (sensorLevel < 5))"). The GPU mech path
+			// carries no per-actor alpha (GpuMechSubmitDesc has no opacity field),
+			// so it can't honor the sensor-fade alphaValue the CPU mechShape path
+			// uses to fade an out-of-LOS enemy down to just its radar blip. Without
+			// this, every sensor-only enemy mech drew its full body next to the
+			// diamond -- models showing with no line of sight. Skipping the submit
+			// makes the body vanish under GPU batching (CPU Render(true) is a no-op
+			// while the batcher owns rendering), leaving only the sensor blip. The
+			// g_useGpuMechs term already gates this to the GPU path; with GPU mechs
+			// off the CPU path still fades the body via alpha, exactly as on Windows.
+			const bool sensorOnly = (sensorLevel > 0) && (sensorLevel < 5);
+			if (g_useGpuMechs && !mechGpuCullSkip && g_drawMechs && !previewContext && !sensorOnly) {
 				// Replicate the highlight selection from the CPU SetARGBHighLight
 				// branches above so the GPU path sees the same color choice.
 				uint32_t gpuHighlightARGB = highLight;
