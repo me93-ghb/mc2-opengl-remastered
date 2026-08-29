@@ -86,6 +86,11 @@ void MissionSelectionScreen::render(int xOffset, int yOffset )
 {
 	// Mission overview renders via the defs GuiText (routed in updateListBox);
 	// the legacy aListBox is no longer drawn.
+	// macos-port: unless there IS no defs page (ImGui/GuiRuntime never initializes
+	// on this port) -- then draw the legacy overview listbox as the original did.
+	const bool defsUi = hasDefsUiPage();
+	if ( !defsUi && xOffset == 0 && yOffset == 0 )
+		missionDescriptionListBox.render();
 
 	// VIDCOM: composite the decoded video frame THROUGH the defs image (ImGui
 	// layer) so it overlays the notransmission fallback, instead of the old gos
@@ -131,6 +136,10 @@ void MissionSelectionScreen::render(int xOffset, int yOffset )
 
 		// bMovie->render() (gos quad) removed — the frame now composites via the
 		// defs VIDCOM image above. bMovie->update() still decodes each frame.
+		// macos-port: no defs page -> the composite above was a no-op; draw the
+		// movie the original way (its own gos quad over the VIDCOM frame art).
+		if ( !defsUi && bMovie )
+			bMovie->render();
 	}
 
 
@@ -255,7 +264,11 @@ void MissionSelectionScreen::begin()
 		FullPathFileName videoName;
 		videoName.init( moviePath, str, ".bik" );
 
-		if (fileExists(videoName) || fileExistsOnCD(videoName))
+		// macos-port: don't gate on the literal .bik existing -- this port ships
+		// only the upscaled .mp4s, and MC2Movie::init resolves the candidate chain
+		// (.mp4/.mkv/.webm/.bik) itself, degrading to a stopped movie when nothing
+		// is playable. The old fileExists(.bik) gate silently killed every briefing
+		// video.
 		{
 			// rects[VIDEO_RECT] is already in screen-space (the .fit
 			// layout file is authored against the game's 800x600
@@ -445,6 +458,40 @@ void MissionSelectionScreen::updateListBox()
 	const char* md = LogisticsData::instance->getCurrentMissionDescription();
 	setDefsElementText( "game.mission_selection.runtime_text.current_mission_name", mn ? mn : "" );
 	setDefsElementText( "game.mission_selection.runtime_text.current_mission_blurb", md ? md : "" );
+
+	// macos-port: no defs page on this port -- populate the legacy listbox the
+	// way the original did (divider / name / divider / description).
+	if ( !hasDefsUiPage() )
+	{
+		aTextListItem* pEntry = new aTextListItem( IDS_MN_LB_FONT );
+		pEntry->resize( missionDescriptionListBox.width() - missionDescriptionListBox.getScrollBarWidth() - 2,
+			pEntry->height() );
+		pEntry->setText( IDS_MN_DIVIDER );
+		pEntry->setColor( 0xffC66600 );
+		missionDescriptionListBox.AddItem( pEntry );
+
+		pEntry = new aTextListItem( IDS_MN_LB_FONT );
+		pEntry->resize( missionDescriptionListBox.width() - missionDescriptionListBox.getScrollBarWidth() - 2,
+			pEntry->height() );
+		pEntry->setText( mn ? mn : "" );
+		pEntry->setColor( 0xffC66600 );
+		missionDescriptionListBox.AddItem( pEntry );
+
+		pEntry = new aTextListItem( IDS_MN_LB_FONT );
+		pEntry->resize( missionDescriptionListBox.width() - missionDescriptionListBox.getScrollBarWidth() - 2,
+			pEntry->height() );
+		pEntry->setText( IDS_MN_DIVIDER );
+		pEntry->setColor( 0xffC66600 );
+		missionDescriptionListBox.AddItem( pEntry );
+
+		pEntry = new aTextListItem( IDS_MN_LB_FONT );
+		pEntry->resize( missionDescriptionListBox.width() - missionDescriptionListBox.getScrollBarWidth() - 2,
+			pEntry->height() );
+		pEntry->setText( md ? md : "" );
+		pEntry->setColor( 0xffC66600 );
+		pEntry->sizeToText();
+		missionDescriptionListBox.AddItem( pEntry );
+	}
 
 
 

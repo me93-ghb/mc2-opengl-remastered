@@ -154,6 +154,26 @@ void MissionBriefingScreen::render(int xOffset, int yOffset )
 
 	LogisticsScreen::render( xOffset, yOffset );
 
+	// macos-port: no defs page on this port -- draw the legacy objectives listbox
+	// and the objective/drop-zone markers at their legacy map positions, exactly
+	// as the original render did. The defs-gated marker overlay below is a no-op
+	// without a defs page (getDefsElementScreenRect returns false).
+	if ( !hasDefsUiPage() )
+	{
+		missionListBox.move( xOffset, yOffset );
+		missionListBox.render();
+		missionListBox.move( -xOffset, -yOffset );
+
+		for ( int i = 0; i < MAX_OBJECTIVES; i++ )
+		{
+			if ( objectiveButtons[i] )
+				objectiveButtons[i]->render( xOffset, yOffset );
+		}
+
+		if ( !MPlayer )
+			dropZoneButton.render( xOffset, yOffset );
+	}
+
 	// Re-sync objective line colours each frame so the auto-cycling selection (which
 	// recolours the hidden listbox items) shows in the defs GuiList.
 	syncObjectivesToDefs( false );
@@ -640,8 +660,13 @@ void MissionBriefingScreen::begin()
 	// Route the objectives into the defs GuiList, then keep the listbox populated (the
 	// auto-cycle highlight logic reads its items) but move it off-screen so the legacy
 	// aListBox doesn't render over the defs list.
+	// macos-port: no defs page on this port -> the GuiList routing is a no-op; keep
+	// the legacy listbox at its authored spot (rects[1]) so the objectives show.
 	syncObjectivesToDefs( true );
-	missionListBox.moveTo( -9000, -9000 );
+	if ( hasDefsUiPage() )
+		missionListBox.moveTo( -9000, -9000 );
+	else
+		missionListBox.moveTo( rects[1].left(), rects[1].top() );
 
 	int RP = LogisticsData::instance->getCBills();
 	char text[32];
