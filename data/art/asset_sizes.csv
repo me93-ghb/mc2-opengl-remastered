@@ -16,9 +16,19 @@
 # discovered from mc2srcdata/art/ on 2026-04-23.
 
 # Mech damage schematic atlases
-art/mcui_high7.tga,1320,96
-art/mcui_med4.tga,1056,76
-art/mcui_low4.tga,825,60
+# macos-port: REMOVED from the scale manifest. These loose data/art/ atlases are
+# NATIVE-40px EXPANSIONS (85 icons: 33 stock + vehicle/infantry/addon slots), not
+# UPSCALES of the 33-icon FST original. The nominal=original(1320/1056/825) entries
+# assumed an upscale, giving f = actual/nominal = 2.576, so every 40px damage-icon
+# blit sampled ~2.5 neighbouring mechs -> the "3 mechs on the same space" garble in
+# the in-mission pilot bar (ForceGroupIcon, mechicon.cpp). Absent from the manifest
+# -> factorFor returns f=1.0, which is correct for BOTH the native FST 1320 atlas
+# and the native loose 3400 expansion (the game indexes them at unitIconX=40 either
+# way). If a TRUE upscale of these atlases is ever shipped, re-add with its real
+# nominal.
+# art/mcui_high7.tga,1320,96
+# art/mcui_med4.tga,1056,76
+# art/mcui_low4.tga,825,60
 
 # Vehicle icon atlases
 art/mcui_high8.tga,1000,48
