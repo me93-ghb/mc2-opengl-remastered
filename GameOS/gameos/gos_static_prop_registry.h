@@ -65,8 +65,11 @@ int32_t registerRecipe(TG_MultiShape* multi,
 // than the old hardcoded 200.0f placeholder. Pass 0.0f when unknown;
 // flush falls back to 200.0f (preserves pre-fix behavior for unpatched
 // callers).
+// macos-port: highlightARGB is the live per-frame selection/flash tint (packed
+// ARGB, 0 = untinted) stamped into the range's baked recipes on change so a
+// hovered registered prop actually tints (the recipe froze it at registration).
 void markVisible(int32_t regIdx, uint32_t lightDataIndex = 0xFFFFFFFFu,
-                 float extentRadius = 0.0f);
+                 float extentRadius = 0.0f, uint32_t highlightARGB = 0u);
 
 // STATIC-PROP REGISTRATION CONTRACT (v1). The plain markVisible() above is
 // fire-and-forget: it silently returns on a tombstoned/dead range, yet callers
@@ -86,7 +89,8 @@ enum class StaticSubmitResult {
 };
 StaticSubmitResult markVisibleChecked(int32_t regIdx,
                                       uint32_t lightDataIndex = 0xFFFFFFFFu,
-                                      float extentRadius = 0.0f);
+                                      float extentRadius = 0.0f,
+                                      uint32_t highlightARGB = 0u);
 
 // Called when static registration must be cleared (fall, late-reg recovery,
 // shape-pointer change, UINT32_MAX light index). Sets recipe range to

@@ -550,6 +550,31 @@ void main() {
         }
     }
 
+    // macos-port: selection/team wash. Retail MC2 paints a hovered building
+    // UNIFORMLY in its team colour (whole roof + walls, not just the shaded
+    // faces). The additive highlight (here and in static_prop.vert) clamps on an
+    // already-bright face, so a sunlit roof never reddened. Instead blend the
+    // final colour toward the team hue at the surface's own brightness, so every
+    // face takes the colour while panel/rib detail survives. No-op when the actor
+    // is unhighlighted (v_highlight == 0). The highlight tables use 0x7f channels,
+    // so normalising by the max channel recovers the full hue (red enemy, green
+    // ally, blue friendly, white neutral).
+    {
+        float hmax = max(v_highlight.r, max(v_highlight.g, v_highlight.b));
+        if (hmax > 0.0) {
+            vec3  washHue = v_highlight.rgb / hmax;
+            // Retail MC2's wash is a PALE tint (a light red gel you can still see
+            // the building through), not a deep saturated colour. Lift the hue
+            // toward white for that pastel look, and keep it light with a
+            // brightness floor so it never reads dark. The mix below keeps 40% of
+            // the underlying surface so panel/rib detail survives.
+            vec3  paleHue = mix(washHue, vec3(1.0), 0.45);
+            float luma    = dot(c.rgb, vec3(0.299, 0.587, 0.114));
+            vec3  washCol = paleHue * clamp(0.55 + luma * 0.6, 0.0, 1.0);
+            c.rgb = mix(c.rgb, washCol, 0.6);
+        }
+    }
+
     c.rgb = mix(v_fog.rgb, c.rgb, u_fogValue);
 
     FragColor = c;

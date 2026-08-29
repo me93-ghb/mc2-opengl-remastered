@@ -266,6 +266,13 @@ struct RecipeRange {
     // shadow casting (flat alpha cards otherwise cast solid blob shadows; the
     // shadow depth pass has no alpha discard). Set via setRecipeNoShadow().
     bool               noShadow;
+    // macos-port: last per-frame selection/flash highlight (packed ARGB) pushed
+    // through markVisible(). The baked recipe froze aRGBHighlight at registration
+    // (=0), so a hovered registered building drew untinted; markVisible now stamps
+    // the live value into s_recipes[leaf].aRGBHighlight on CHANGE and bumps the
+    // generation so the persistent store rebake carries it. Change-gated => the
+    // rebuild fires only on hover enter/leave, not per frame.
+    uint32_t           highlightARGB;
 };
 
 static std::vector<GpuStaticPropInstance> s_recipes;
@@ -618,6 +625,7 @@ int32_t registerRecipe(TG_MultiShape* multi,
     rng.shapeName[0]      = '\0';         // populated by late-spawn path if Appearance* available
     rng.population        = 0xFFu;        // SHADOW-STATIC-BUILDINGS-2: unset until setRecipePopulation()
     rng.noShadow          = false;        // SHADOW-FOLIAGE: casts unless setRecipeNoShadow(true)
+    rng.highlightARGB     = 0u;           // macos-port: baked recipes register untinted
     s_recipes.insert(s_recipes.end(), batch.begin(), batch.end());
     // 2A: keep cached-actor-record arrays in lockstep with s_recipes.
     // New entries are valid=0 (uncached); they will be lazily built on first flush (Task 4).
@@ -685,7 +693,8 @@ int32_t registerRecipe(TG_MultiShape* multi,
     return regIdx;
 }
 
-void markVisible(int32_t regIdx, uint32_t lightDataIndex, float extentRadius) {
+void markVisible(int32_t regIdx, uint32_t lightDataIndex, float extentRadius,
+                 uint32_t highlightARGB) {
     if (!s_enabled) return;
     if (regIdx < 0 || static_cast<uint32_t>(regIdx) >= s_recipeRanges.size()) return;
     RecipeRange& rng = s_recipeRanges[static_cast<uint32_t>(regIdx)];
@@ -715,6 +724,28 @@ void markVisible(int32_t regIdx, uint32_t lightDataIndex, float extentRadius) {
         }
         ++s_registryGeneration;   // 2b Stage 2: immutable-field (light/extent) write
     }
+    // macos-port: per-frame selection/flash tint. The baked recipe froze
+    // aRGBHighlight at registration, so a registered building drew untinted on
+    // hover. Stamp the live packed-ARGB into every leaf's recipe (decoded to the
+    // shader's (R,G,B,A) float[4], matching submit() in gos_static_prop_batcher)
+    // and bump the generation so the persistent-store rebake picks it up. Same
+    // change-gate as light/extent above: fires only on hover enter/leave, so the
+    // store rebuild is 2 per interaction, not per frame.
+    if (rng.highlightARGB != highlightARGB) {
+        rng.highlightARGB = highlightARGB;
+        const float hr = static_cast<float>((highlightARGB >> 16) & 0xFFu) / 255.0f;
+        const float hg = static_cast<float>((highlightARGB >>  8) & 0xFFu) / 255.0f;
+        const float hb = static_cast<float>((highlightARGB      ) & 0xFFu) / 255.0f;
+        const float ha = static_cast<float>((highlightARGB >> 24) & 0xFFu) / 255.0f;
+        for (uint32_t k = rng.first; k < rng.first + rng.count; ++k) {
+            s_recipes[k].aRGBHighlight[0] = hr;
+            s_recipes[k].aRGBHighlight[1] = hg;
+            s_recipes[k].aRGBHighlight[2] = hb;
+            s_recipes[k].aRGBHighlight[3] = ha;
+            invalidateCachedFlushRecord(k);
+        }
+        ++s_registryGeneration;
+    }
     s_liveRangeIndices.push_back(static_cast<uint32_t>(regIdx));
 }
 
@@ -724,14 +755,14 @@ void markVisible(int32_t regIdx, uint32_t lightDataIndex, float extentRadius) {
 // (gos_static_prop_registry.cpp: "if (rng.count == 0 || !rng.multi) ... continue") so a
 // "Submitted" result GUARANTEES flush will not skip the range for those reasons.
 StaticSubmitResult markVisibleChecked(int32_t regIdx, uint32_t lightDataIndex,
-                                      float extentRadius) {
+                                      float extentRadius, uint32_t highlightARGB) {
     if (!s_enabled) return StaticSubmitResult::NotRegistered;
     if (regIdx < 0 || static_cast<uint32_t>(regIdx) >= s_recipeRanges.size())
         return StaticSubmitResult::MissingRange;
     const RecipeRange& rng = s_recipeRanges[static_cast<uint32_t>(regIdx)];
     if (rng.count == 0)  return StaticSubmitResult::Tombstoned;   // dead handle
     if (!rng.multi)      return StaticSubmitResult::InvalidRecipe; // flush would skip it
-    markVisible(regIdx, lightDataIndex, extentRadius);            // accept (queues for flush)
+    markVisible(regIdx, lightDataIndex, extentRadius, highlightARGB); // accept (queues for flush)
     return StaticSubmitResult::Submitted;
 }
 

@@ -2208,7 +2208,16 @@ long BldgAppearance::render (long depthFixup)
 						GpuStaticPropRegistry::markVisibleChecked(
 							staticReg.recipeIndex,
 							staticReg.lightDataIndex,
-							bldgShape ? bldgShape->GetExtentRadius() : 0.0f);
+							bldgShape ? bldgShape->GetExtentRadius() : 0.0f,
+								// macos-port: live selection/flash tint into the static
+								// bake (mirrors the SetARGBHighLight branch above:
+								// DRAW_COLORED -> team highLight, else highlightColor,
+								// flash wins). Without it a hovered REGISTERED building
+								// stays frozen at its registration highlight (0) because
+								// reinjectPersistentStatic redraws the baked copy untinted.
+								(uint32_t)(drawFlash ? flashColor
+									: ((selected & DRAW_COLORED) ? highLight
+									                             : (uint32_t)highlightColor)));
 					if (bldgRes == GpuStaticPropRegistry::StaticSubmitResult::Submitted) {
 						++s_diag_markVisible;
 						submittedToGpu = true;
