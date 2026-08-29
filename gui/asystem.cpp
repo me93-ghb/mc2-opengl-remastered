@@ -37,6 +37,13 @@ void aObject::beginGuiBridge(float scaleX, float scaleY)
 
 void aObject::beginGuiBridge(float scaleX, float scaleY, float offX, float offY)
 {
+	// macos-port: MC2_IMGUI=OFF never calls GuiRuntime::Init, so DrawUiText/
+	// DrawUiImage are silent no-ops while the bridge suppresses the legacy gos
+	// draw -- every bridged widget (mech-list names, bay deployment icons)
+	// vanished. Leave the bridge off unless the ImGui layer can actually draw;
+	// legacy rendering then runs, and an ImGui bring-up re-enables unchanged.
+	if ( !GuiRuntime::IsReadyForUiText() )
+		return;
 	s_guiBridgeActive = true;
 	s_guiBridgeSx = scaleX > 0.0f ? scaleX : 1.0f;
 	s_guiBridgeSy = scaleY > 0.0f ? scaleY : 1.0f;
@@ -89,6 +96,9 @@ void aObject::endGuiBridge()
 
 void aObject::beginTextBridge(float scaleX, float scaleY, float fontScale, float offX, float offY)
 {
+	// macos-port: same ImGui-availability gate as beginGuiBridge above.
+	if ( !GuiRuntime::IsReadyForUiText() )
+		return;
 	s_textBridgeActive = true;
 	s_textBridgeSx = scaleX > 0.0f ? scaleX : 1.0f;
 	s_textBridgeSy = scaleY > 0.0f ? scaleY : 1.0f;
