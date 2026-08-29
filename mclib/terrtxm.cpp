@@ -388,10 +388,19 @@ long TerrainTextures::init (const char *fileName, const char *baseName)
 			long overlayTextureIndex = initOverlay(i,j,overlays[i].overlayName);
 			if (!j)
 				overlays[i].baseTXMIndex = overlayTextureIndex;
-				
+
 			if (!i && !j)
 				firstOverlay = overlayTextureIndex;
 		}
+	}
+
+	// macos-port: snapshot the overlay ranges so handle decoding keeps working
+	// after update() purges the live table (see header comment).
+	overlayRangeCount = (numOverlays < MAX_OVERLAY_RANGES) ? numOverlays : MAX_OVERLAY_RANGES;
+	for (int i=0;i<overlayRangeCount;i++)
+	{
+		overlayRanges[i].base = overlays[i].baseTXMIndex;
+		overlayRanges[i].num  = overlays[i].numTextures;
 	}
 
 	//------------------------------------------
@@ -955,15 +964,17 @@ long TerrainTextures::setOverlay (DWORD overlayInfo)
 // this doesn't use the old indices. Those shouldn't be necessary.
 long TerrainTextures::getOverlayHandle( Overlays id, int Offset )
 {
+	// macos-port: read the purge-surviving snapshot, not the live table --
+	// bldng.cpp damaged-bridge overlays call this in-mission, post-purge.
 	long txmHandle = 0xffff0000;
-	gosASSERT( id > -2 && id < numOverlays );
-	
-	if ( id > -1 && id < numOverlays )
+	gosASSERT( id > -2 && id < overlayRangeCount );
+
+	if ( id > -1 && id < overlayRangeCount )
 	{
-		txmHandle = overlays[id].baseTXMIndex + (Offset * MC_MAX_MIP_LEVELS );
+		txmHandle = overlayRanges[id].base + (Offset * MC_MAX_MIP_LEVELS );
 		txmHandle <<= 16;
 	}
-	
+
 	return(txmHandle);
 
 }
@@ -973,14 +984,16 @@ void TerrainTextures::getOverlayInfoFromHandle( long handle, Overlays& id, DWORD
 	id = INVALID_OVERLAY;
 	Offset = -1;
 
-	for ( int i = 0; i < numOverlays; ++i )
+	// macos-port: decode against the purge-surviving snapshot -- the decal
+	// static bake calls this after update() has freed the live overlays table.
+	for ( int i = 0; i < overlayRangeCount; ++i )
 	{
-		if ( (handle >> 16) >= overlays[i].baseTXMIndex 
-			 && (handle >> 16) < overlays[i].baseTXMIndex + overlays[i].numTextures * MC_MAX_MIP_LEVELS )
+		if ( (handle >> 16) >= overlayRanges[i].base
+			 && (handle >> 16) < overlayRanges[i].base + overlayRanges[i].num * MC_MAX_MIP_LEVELS )
 		{
 			id = (Overlays)i;
-			long tmp = (handle >> 16) - overlays[i].baseTXMIndex;
-			Offset = tmp/MC_MAX_MIP_LEVELS;			
+			long tmp = (handle >> 16) - overlayRanges[i].base;
+			Offset = tmp/MC_MAX_MIP_LEVELS;
 		}
 	}
 }

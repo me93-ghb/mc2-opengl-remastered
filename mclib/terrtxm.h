@@ -134,7 +134,19 @@ class TerrainTextures
 
 		long				numOverlays;
 		MC_OverlayTypePtr	overlays;
-		
+
+		// macos-port: overlay RANGE snapshot that survives update()'s post-load
+		// purge (numOverlays=0 / overlays=NULL). The remaster's decal static
+		// bake (road tiles) and in-mission bridge damage call
+		// getOverlayInfoFromHandle/getOverlayHandle AFTER that purge; with the
+		// live table gone every road decoded as INVALID_OVERLAY and the
+		// CEMENT-ROAD-SPLIT-1 gate skipped all road quads (roads invisible).
+		// Filled at init() right after the overlay preload; tiny (2 longs/type).
+		enum { MAX_OVERLAY_RANGES = 64 };
+		struct OverlayRange { long base; long num; };
+		OverlayRange		overlayRanges[MAX_OVERLAY_RANGES];
+		long				overlayRangeCount;
+
 		long				numDetails;
 		MC_DetailTypePtr	details;
 		
@@ -198,6 +210,7 @@ class TerrainTextures
 			// Stores Overlay Terrain Textures in VidMem and MLR Shapes
 			numOverlays = 0;
 			overlays = NULL;
+			overlayRangeCount = 0;
 
 			numDetails = 0;
 			details = NULL;
