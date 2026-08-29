@@ -1355,6 +1355,7 @@ class gosRenderer {
         void applyRenderStates();
 
         void drawQuads(gos_VERTEX* vertices, int count);
+        void drawScreenQuads(gos_VERTEX* vertices, int count);  // macos-port: ortho screen-space quads
         void drawLines(gos_VERTEX* vertices, int count);
         void flushHUDBatch();
         void replayTextQuads(const HudDrawCall& call);
@@ -5722,6 +5723,76 @@ void gosRenderer::drawQuads(gos_VERTEX* vertices, int count) {
     afterDrawCall();
 }
 
+// macos-port: draw screen-space quads through the screen-pixel->NDC ortho instead
+// of projection_ (the world/camera matrix during the mission render phase). The
+// gos_DrawQuads API takes D3D pre-transformed screen verts, so like gos text
+// (see drawText's textProj fix) it must use the ortho. Used by
+// gos_TextDrawBackground: with the raw projection_ the text-background box (e.g.
+// the "Mission Successful!" banner fill) was skewed/collapsed by the world
+// matrix. Always immediate (never the HUD batch, whose snapshot would capture the
+// same wrong projection). Ortho matches gosRenderer::handleEvents / drawText.
+void gosRenderer::drawScreenQuads(gos_VERTEX* vertices, int count) {
+    ZoneScopedN("DrawScreenQuads");
+    gosASSERT(vertices);
+
+    if(beforeDrawCall()) return;
+
+    const int num_quads = count / 4;
+    const int num_vertices = num_quads * 6;
+
+    if(quads_->getNumVertices() + num_vertices > quads_->getVertexCapacity()) {
+        applyRenderStates();
+        gosRenderMaterial* m = selectBasicRenderMaterial(curStates_);
+        gosASSERT(m);
+        m->setTransform(projection_);
+        m->setFogColor(fog_color_);
+        quads_->draw(m);
+        quads_->rewind();
+    }
+
+    gosASSERT(quads_->getNumVertices() + num_vertices <= quads_->getVertexCapacity());
+    for(int q = 0; q < num_quads; ++q) {
+        gos_VERTEX* vq = vertices + 4 * q;
+        quads_->addVertices(vq + 0, 1);
+        quads_->addVertices(vq + 1, 1);
+        quads_->addVertices(vq + 2, 1);
+        quads_->addVertices(vq + 0, 1);
+        quads_->addVertices(vq + 2, 1);
+        quads_->addVertices(vq + 3, 1);
+    }
+
+    // macos-port: this is a SOLID-colour fill, but gos_TextDrawBackground never
+    // clears gos_State_Texture, so selectBasicRenderMaterial picked the TEXTURED
+    // material and the box sampled whatever texture was last bound (the font atlas
+    // from the preceding text draw) across its u/v 0..1 -> the "box" showed glyph
+    // fragments instead of a solid fill. Force texture off so the basic (untex)
+    // material is used. Also disable ZCompare: this runs during the mission phase
+    // with depth-test (GL_LEQUAL) still on from terrain, which occluded the box
+    // where terrain sat in front. Restore both after (same contract as drawText).
+    const int prev_texture  = getRenderState(gos_State_Texture);
+    const int prev_zcompare = getRenderState(gos_State_ZCompare);
+    setRenderState(gos_State_Texture, 0);
+    setRenderState(gos_State_ZCompare, 0);
+
+    applyRenderStates();
+    gosRenderMaterial* mat = selectBasicRenderMaterial(curStates_);
+    gosASSERT(mat);
+
+    const mat4 screenProj(2.0f / (float)width_, 0, 0.0f, -1.0f,
+                          0, -2.0f / (float)height_, 0.0f, 1.0f,
+                          0, 0, 1.0f, 0.0f,
+                          0, 0, 0.0f, 1.0f);
+    mat->setTransform(screenProj);
+    mat->setFogColor(fog_color_);
+    quads_->draw(mat);
+    quads_->rewind();
+
+    setRenderState(gos_State_Texture, prev_texture);
+    setRenderState(gos_State_ZCompare, prev_zcompare);
+
+    afterDrawCall();
+}
+
 void gosRenderer::drawLines(gos_VERTEX* vertices, int count) {
     ZoneScopedN("DrawLines");
     gosASSERT(vertices);
@@ -8204,35 +8275,40 @@ void __stdcall gos_TextDraw( const char *Message, ... )
 
 void __stdcall gos_TextDrawBackground( int Left, int Top, int Right, int Bottom, DWORD Color )
 {
-    // TODO: Is it correctly Implemented?
     gosASSERT(g_gos_renderer);
-
-    //PAUSE((""));
 
     gos_VERTEX v[4];
     v[0].x = (float)Left;
     v[0].y = (float)Top;
     v[0].z = 0;
+	// macos-port: the basic quad shader (gos_vertex.vert) divides gl_Position by
+	// pos.w (the vertex rhw). The original never set rhw, so it divided by
+	// uninitialised stack garbage and the box collapsed/flew off screen. Screen-
+	// space gos_DrawQuads verts use rhw=0.5 (see controlgui.cpp csgThickSeg); set
+	// it here (inherited by the memcpy'd corners below).
+	v[0].rhw = 0.5f;
 	v[0].argb = Color;
 	v[0].frgb = 0;
-	v[0].u = 0;	
-	v[0].v = 0;	
+	v[0].u = 0;
+	v[0].v = 0;
     memcpy(&v[1], &v[0], sizeof(gos_VERTEX));
     memcpy(&v[2], &v[0], sizeof(gos_VERTEX));
     memcpy(&v[3], &v[0], sizeof(gos_VERTEX));
-    v[1].x = (float)Right;
-    v[1].u = 1.0f;
-
-    v[2].x = (float)Right;
-    v[2].y = (float)Bottom;
-    v[2].u = 1.0f;
-    v[2].v = 0.0f;
-
-    v[1].y = (float)Bottom;
-    v[1].v = 1.0f;
+    // macos-port: build the four rect corners in drawQuads' loop order
+    // (it emits triangles v0,v1,v2 + v0,v2,v3). The original left v[3] at its
+    // memcpy'd (Left,Top) and moved v[1] to (Right,Bottom), so v[1]==v[2] and the
+    // (Left,Bottom) corner was missing -> both triangles degenerate -> the text
+    // background box collapsed to a line (e.g. the "Mission Successful!" banner
+    // fill). Corners: TL, TR, BR, BL.
+    v[1].x = (float)Right;   v[1].y = (float)Top;      v[1].u = 1.0f; v[1].v = 0.0f;  // top-right
+    v[2].x = (float)Right;   v[2].y = (float)Bottom;   v[2].u = 1.0f; v[2].v = 1.0f;  // bottom-right
+    v[3].x = (float)Left;    v[3].y = (float)Bottom;   v[3].u = 0.0f; v[3].v = 1.0f;  // bottom-left
 
     if(g_disable_quads == false )
-        g_gos_renderer->drawQuads(v, 4);
+        // macos-port: the text background is a screen-space UI fill; draw it through
+        // the screen ortho, not projection_ (which is the world matrix during the
+        // mission render phase -- it skewed/collapsed the "Mission Successful!" box).
+        g_gos_renderer->drawScreenQuads(v, 4);
 }
 
 void __stdcall gos_TextSetAttributes( HGOSFONT3D FontHandle, DWORD Foreground, float Size, bool WordWrap, bool Proportional, bool Bold, bool Italic, DWORD WrapType/*=0*/, bool DisableEmbeddedCodes/*=0*/)
