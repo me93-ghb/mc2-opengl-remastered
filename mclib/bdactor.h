@@ -392,6 +392,14 @@ class BldgAppearance : public ObjectAppearance
 		void touchWorkerPrepass() override;
 		void touchSerialCommit() override;
 
+		// macos-port: reproject screenPos/upperLeft/lowerRight for the selection
+		// overlay. recalcBounds no longer computes them (projection body removed
+		// 2026-05-18; the pick recomputes its own rect into pickCache_), so
+		// drawTextHelp/drawBars read the -999 init and draw the hovered building's
+		// name + health bar off screen. Called from render() for the selected
+		// building only (≤1-2 per frame).
+		void updateOverlayScreenBounds (void);
+
 		virtual bool getInTransition (void)
 		{
 			return (canTransition == false);

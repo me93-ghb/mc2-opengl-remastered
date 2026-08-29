@@ -2008,6 +2008,84 @@ bool BldgAppearance::playDestruction (void)
 }
 
 //-----------------------------------------------------------------------------
+// macos-port: reproject the screen-space bounds the selection overlay consumes.
+// recalcBounds' projection body was removed 2026-05-18 (inView went coarse-
+// angular-only; the mouse pick recomputes its own rect lazily into pickCache_),
+// which left screenPos/upperLeft/lowerRight pinned at their -999 init. But
+// drawTextHelp reads screenPos + lowerRight and drawBars reads upperLeft +
+// lowerRight, so a hovered building's name and health bar were drawn at
+// (-999,-999) -- off screen -- even though its DRAW_TEXT/DRAW_BARS flags were set
+// (movers were unaffected: their appearances still project every frame). Recompute
+// only for the selected building (render() gates the call on `selected`), so this
+// costs one projection for the 1-2 hovered/selected buildings, not every prop.
+// Mirrors the pre-delete recalcBounds math (projectZ(position) for screenPos +
+// the typeUpperLeft/typeLowerRight OBB min/max), matched to the pick's box in
+// objmgr.cpp projectPickCandidateRect and using the same behind-near-plane guard.
+void BldgAppearance::updateOverlayScreenBounds (void)
+{
+	if (!eye || !appearType)
+		return;
+
+	// Name is centered on the projected origin (drawTextHelp: moveHere = screenPos).
+	eye->projectForScreenXY(position, screenPos);
+
+	Stuff::Vector3D boxStart, boxEnd;
+	boxStart.x = -appearType->typeUpperLeft.x;
+	boxStart.y =  appearType->typeUpperLeft.z;
+	boxStart.z =  appearType->typeUpperLeft.y;
+	boxEnd.x   = -appearType->typeLowerRight.x;
+	boxEnd.y   =  appearType->typeLowerRight.z;
+	boxEnd.z   =  appearType->typeLowerRight.y;
+
+	// The 8 OBB corners are every {start,end} combination per axis; min/max over
+	// them is order-independent, so a compact selector table replaces the eight
+	// hand-unrolled corners of the original.
+	static const unsigned char kCorner[8][3] = {
+		{0,0,1},{0,1,1},{1,1,1},{1,0,1},{0,0,0},{1,0,0},{1,1,0},{0,1,0}
+	};
+
+	float minX = 0.0f, minY = 0.0f, maxX = 0.0f, maxY = 0.0f;
+	int used = 0;
+	for (int i = 0; i < 8; i++)
+	{
+		Stuff::Vector3D addCoords;
+		addCoords.x = kCorner[i][0] ? boxEnd.x : boxStart.x;
+		addCoords.y = kCorner[i][1] ? boxEnd.y : boxStart.y;
+		addCoords.z = kCorner[i][2] ? boxEnd.z : boxStart.z;
+		if (rotation != 0.0f)
+			Rotate(addCoords, -rotation);
+
+		Stuff::Vector3D world;
+		world.Add(position, addCoords);
+		Stuff::Vector4D sp;
+		eye->projectForScreenXY(world, sp);
+		// A near-plane-clipped corner projects to a garbage/origin coord (see the
+		// pick's INPUT-CURSOR-OFFSCREEN FIX); build the rect from in-front corners.
+		if (sp.w <= 1e-4f)
+			continue;
+
+		if (!used)
+		{
+			minX = maxX = sp.x;
+			minY = maxY = sp.y;
+		}
+		else
+		{
+			if (sp.x < minX) minX = sp.x;
+			if (sp.x > maxX) maxX = sp.x;
+			if (sp.y < minY) minY = sp.y;
+			if (sp.y > maxY) maxY = sp.y;
+		}
+		++used;
+	}
+	if (!used)
+		return;		// fully behind the camera; leave bounds unchanged
+
+	upperLeft.x  = minX;  upperLeft.y  = minY;
+	lowerRight.x = maxX;  lowerRight.y = maxY;
+}
+
+//-----------------------------------------------------------------------------
 long BldgAppearance::render (long depthFixup)
 {
 	// GPU-batcher path bypasses inView here — the whole point of C2 is
@@ -2293,6 +2371,13 @@ long BldgAppearance::render (long depthFixup)
 				s_prevShape[this] = bldgShape;
 			}
 		}
+
+		// macos-port: the selection overlay (drawBars/drawTextHelp below) reads
+		// screenPos/upperLeft/lowerRight, which recalcBounds no longer fills. For
+		// the selected building only, reproject them now so the name + health bar
+		// land on the building instead of off screen at the -999 init.
+		if (selected & (DRAW_BARS | DRAW_TEXT | DRAW_BRACKETS))
+			updateOverlayScreenBounds();
 
 		if (selected & DRAW_BARS)
 		{
