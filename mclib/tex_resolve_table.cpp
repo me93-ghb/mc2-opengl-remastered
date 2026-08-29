@@ -105,6 +105,26 @@ void beginFrameTexResolve(uint64_t frameId)
     }
 }
 
+// macos-port: kill the handle memo when the texture manager whacks all gos
+// handles (mission unload). A restart from in-mission runs the next mission's
+// load MID-FRAME (endFrameTexResolve never ran), so tex_resolve during
+// BuildDenseRecipe / decal bakes hit the PREVIOUS mission's memoized handles —
+// all deleted at unload — and the cement atlas rebuilt with 0 tiles (concrete
+// invisible after every fail/restart). Resetting here forces the legacy
+// cache-in path for every load-time resolve. Called from
+// MC_TextureManager::flush() and destroy().
+void invalidateTexResolveTable(void)
+{
+    if (!g_texResolveTable.enabled)
+        return;
+    memset(g_texResolveTable.handles, 0xFF, sizeof(g_texResolveTable.handles));
+    g_texResolveTable.frameActive = false;   // next beginFrameTexResolve re-arms
+    if (g_texResolveTable.trace) {
+        printf("[TEX_RESOLVE v1] event=invalidate_on_texture_purge\n");
+        fflush(stdout);
+    }
+}
+
 void endFrameTexResolve(void)
 {
     ZoneScopedN("Terrain.EndFrameTexResolve");

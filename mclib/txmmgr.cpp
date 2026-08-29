@@ -644,8 +644,12 @@ void MC_TextureManager::destroy (void)
 		long usedCount = 0;
 		for (long i=0;i<MC_MAXTEXTURES;i++)
 			masterTextureNodes[i].destroy();		// Destroy for nodes whacks GOS Handle
-		
+
 		currentUsedTextures = usedCount;			//Can this have been the damned bug all along!?
+
+		// macos-port: every gos handle above just died — the tex_resolve memo
+		// holding them must die too (see invalidateTexResolveTable).
+		invalidateTexResolveTable();
 	}
 	
 	gos_PushCurrentHeap(MidLevelRenderer::Heap);
@@ -777,6 +781,14 @@ void MC_TextureManager::flush (bool justTextures)
 		}
 
 		currentUsedTextures = usedCount;				//Can this have been the damned bug all along!?
+
+		// macos-port: gos handles for all non-neverFLUSH nodes just died; the
+		// tex_resolve memo must die with them. An in-mission restart reloads
+		// the next mission MID-FRAME (endFrameTexResolve never ran), so
+		// load-time resolves would otherwise replay these dead handles —
+		// cement atlas rebuilds with 0 tiles, concrete invisible (and any
+		// other load-time tex_resolve consumer gets a dead handle).
+		invalidateTexResolveTable();
 
 		// [TXMMGR_TEXTURE_AUDIT v1] post-flush survivor census + emit.
 		if (s_txmLeakTrace)
@@ -4763,6 +4775,18 @@ DWORD MC_TextureNode::get_gosTextureHandle (void)	//If texture is not in VidRAM,
 	{
 		//Somehow this texture is bad.  Probably we are using a handle which got purged between missions.
 		// Just send back, NO TEXTURE and we should be able to debug from there because the tri will have no texture!!
+		// macos-port: the PAUSE above never reaches the log; name the node so the
+		// "purged between missions" class (cement atlas N=0 on mission restart) is
+		// diagnosable. Rate-limited, cold branch only.
+		{
+			static int s_badHandleLogged = 0;
+			if (s_badHandleLogged < 32) {
+				++s_badHandleLogged;
+				fprintf(stderr, "[TXM] bad_handle_purged node=%s\n",
+					nodeName ? nodeName : "<null>");
+				fflush(stderr);
+			}
+		}
 		PAUSE(("txmmgr: Bad texture handle!"));
 		return 0x0;
 	}

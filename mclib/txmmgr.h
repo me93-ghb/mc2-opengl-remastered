@@ -631,6 +631,15 @@ class MC_TextureManager
             return nullptr;
         }
 
+        // macos-port CEMENT_DIAG: raw node handle (no cache-in side effects) for
+        // the mission-restart atlas diagnosis. 0xffffffff for out-of-range.
+        DWORD peekNodeGosHandleRaw (DWORD nodeId) const
+        {
+            if (nodeId < MC_MAXTEXTURES)
+                return masterTextureNodes[nodeId].gosTextureHandle;
+            return 0xffffffff;
+        }
+
 		bool isTextureNodeResident (DWORD nodeId) const
 		{
 			if ((nodeId == 0xffffffff) || (nodeId == 0))

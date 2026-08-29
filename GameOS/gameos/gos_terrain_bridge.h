@@ -39,6 +39,11 @@ void gos_terrain_bridge_bindUniforms(gosRenderMaterial* material);
 // or any case where the texture isn't resident.
 unsigned int gos_terrain_bridge_glTextureForGosHandle(unsigned int gosHandle);
 
+// macos-port CEMENT_DIAG probe: why does a gosHandle have no GL texture?
+// >=0: GL id (0 = gosTexture exists, no GL object). -1 no renderer,
+// -2 invalid handle, -3 beyond textureList_, -4 slot deleted (stale handle).
+int gos_terrain_bridge_texStateForGosHandle(unsigned int gosHandle);
+
 // gos_terrain_bridge_drawPatchStreamBucket, gos_terrain_bridge_beginBucketLoop,
 // gos_terrain_bridge_drawSingleBucket, gos_terrain_bridge_endBucketLoop deleted by
 // TERRAIN-BRIDGE-BODY-DELETE-1/2: callerless after TerrainPatchStream::flush() retired

@@ -1193,10 +1193,36 @@ void BuildCementCatalogAtlas() {
             }
             continue;
         }
+        // macos-port CEMENT_DIAG: capture the node's raw handle BEFORE tex_resolve
+        // (which cache-ins on demand) so the reject print shows whether the node
+        // held a stale live-looking handle from the purged previous mission.
+        const DWORD rawBefore = mcTextureManager
+            ? mcTextureManager->peekNodeGosHandleRaw(nodeIdx) : 0xffffffffu;
         const DWORD gosHandle = tex_resolve(nodeIdx);
-        if (gosHandle == 0u) continue;
+        // macos-port CEMENT_DIAG: name the silent reject legs — on the mission
+        // fail/restart path every cement slot resolved to 0 here (N=0 rebuild,
+        // concrete invisible) and these continues hid which leg fired.
+        if (gosHandle == 0u) {
+            if (traceOn()) {
+                printf("[CEMENT_DIAG] reject slot=%ld nodeIdx=%u reason=gosHandle0 rawBefore=0x%08x node=%s\n",
+                       slot, (unsigned)nodeIdx, (unsigned)rawBefore,
+                       (mcTextureManager && mcTextureManager->getTextureName(nodeIdx))
+                           ? mcTextureManager->getTextureName(nodeIdx) : "<null>");
+            }
+            continue;
+        }
         const GLuint glTex = gos_terrain_bridge_glTextureForGosHandle((unsigned)gosHandle);
-        if (glTex == 0) continue;
+        if (glTex == 0) {
+            if (traceOn()) {
+                printf("[CEMENT_DIAG] reject slot=%ld nodeIdx=%u reason=glTex0 gosHandle=%u "
+                       "rawBefore=0x%08x bridgeState=%d node=%s\n",
+                       slot, (unsigned)nodeIdx, (unsigned)gosHandle, (unsigned)rawBefore,
+                       gos_terrain_bridge_texStateForGosHandle((unsigned)gosHandle),
+                       (mcTextureManager && mcTextureManager->getTextureName(nodeIdx))
+                           ? mcTextureManager->getTextureName(nodeIdx) : "<null>");
+            }
+            continue;
+        }
         // Record-but-don't-break past atlas budget cap: we still want the
         // diag totals to reflect TRUE counts for tier1.  Atlas allocation
         // gated on size below to avoid memory blowup.

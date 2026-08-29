@@ -2618,6 +2618,20 @@ unsigned int gos_terrain_bridge_glTextureForGosHandle(unsigned int gosHandle) {
     return (unsigned int)tex->getTextureId();
 }
 
+// macos-port CEMENT_DIAG probe: distinguish WHY a gosHandle has no GL texture.
+// >=0: the GL id (0 = gosTexture exists but has no GL object).
+// -1 no renderer, -2 invalid handle, -3 handle beyond textureList_, -4 slot
+// deleted (textureList_[h] == NULL — the "stale handle from a purged mission"
+// signature).
+int gos_terrain_bridge_texStateForGosHandle(unsigned int gosHandle) {
+    if (!g_gos_renderer) return -1;
+    if (gosHandle == 0u || gosHandle == INVALID_TEXTURE_ID) return -2;
+    if (g_gos_renderer->getTextureListSize() <= gosHandle) return -3;
+    gosTexture* tex = g_gos_renderer->getTexture(gosHandle);
+    if (!tex) return -4;
+    return (int)tex->getTextureId();
+}
+
 // gos_terrain_bridge_drawPatchStreamBucket deleted by TERRAIN-BRIDGE-BODY-DELETE-2:
 // callerless after TerrainPatchStream::flush() retired (TERRAIN-BRIDGE-BODY-DELETE-1).
 

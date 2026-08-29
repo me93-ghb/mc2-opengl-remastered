@@ -42,6 +42,13 @@ void beginFrameTexResolve(uint64_t frameId);
 // "this is a terrain frame" window an explicit invariant.
 void endFrameTexResolve(void);
 
+// macos-port: reset memo + frameActive when ALL gos handles are invalidated
+// (MC_TextureManager::flush/destroy at mission unload). Without this, an
+// in-mission restart reloads the next mission mid-frame and load-time
+// tex_resolve calls replay the dead mission's memoized handles (cement atlas
+// N=0, concrete invisible).
+void invalidateTexResolveTable(void);
+
 // Initialize from env vars; print [TEX_RESOLVE v1] event=startup. Called
 // once at engine init.
 void initTexResolveTable(void);
