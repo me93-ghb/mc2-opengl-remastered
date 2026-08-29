@@ -354,6 +354,14 @@ void PilotReviewScreen::update()
 			{
 				handleMessage( aMSG_DONE, aMSG_DONE );
 			}
+
+			// macos-port: the button's own update() already latched PRESSED for this
+			// click. When the click did NOT dismiss the screen (it fast-forwarded, or
+			// arrived before entryAnim finished), nothing ever releases the press while
+			// the cursor stays inside -- and the PRESSED art is the same dark region as
+			// DISABLED, so the button looks dead while still clickable. Release it.
+			if ( i == 0 && !bDone )
+				buttons[0].press( 0 );
 		}
 
 	}

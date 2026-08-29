@@ -1302,17 +1302,24 @@ long Mission::update (void)
 
 				if (lPilot)
 				{
-					const long rankBefore = lPilot->getRank();
-					// soakAddGunnery bumps both lifetime gunnery and newGunnery
-					// delta so promotePilot() sees a mission gain large enough
-					// to cross a rank threshold from any starting rank.
-					// 11 pts guarantees crossing regardless of start (worst case
-					// GREEN->REGULAR needs avg 50+epsilon; 11 pts covers all).
-					lPilot->soakAddGunnery(11.0f);
-					bool promoted = lPilot->promotePilot();
-					const long rankAfter = lPilot->getRank();
-					printf("[SOAK] pilot-promote pilot=%s rankBefore=%ld rankAfter=%ld ok=%d\n",
-						pilotName, rankBefore, rankAfter, promoted ? 1 : 0);
+					// macos-port: bump the WARRIORS' gunnery skillRank, not the
+					// LogisticsPilot -- mission-end LogisticsPilot::update() overwrites
+					// LP skills from the warrior (newGunnery = warrior - lp), so an
+					// LP-side bump is wiped before the pilot-review promotion check ever
+					// sees it (the old soakAddGunnery form never promoted anyone).
+					// +11 crosses GREEN->REGULAR from any campaign-1 start even after
+					// the 4-points-per-mission cap in LogisticsPilot::update().
+					for (int wj = 1; wj <= MechWarrior::numWarriors; ++wj)
+					{
+						MechWarriorPtr mwj = MechWarrior::warriorList[wj];
+						if (!mwj) continue;
+						LogisticsPilot* lpj = LogisticsData::instance
+							? LogisticsData::instance->getPilot(mwj->getName()) : nullptr;
+						if (!lpj) continue;
+						mwj->skillRank[MWS_GUNNERY] += 11.0f;
+						printf("[SOAK] pilot-promote warrior=%s gunnery+11 -> %.1f\n",
+							mwj->getName(), mwj->skillRank[MWS_GUNNERY]);
+					}
 					fflush(stdout);
 				}
 				else
