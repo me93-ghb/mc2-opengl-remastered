@@ -1048,7 +1048,16 @@ void flush() {
         // frame; the next frame after it returns to view will refresh the
         // cache and the static path resumes correctly.
         const bool isFirstFlush = !rng.firstFlushSeen;
-        if (rng.multi->getCachedFrame() != currentFrame) {
+        // macos-port: accept a ONE-frame-old stamp. Baked static light slots are
+        // permanent (slot == recipeIndex under LIGHTBAKE, default-on), so an N-1
+        // index resolves identically; demanding exact currentFrame made EVERY
+        // registered prop blink for one frame whenever the touch pass and flush
+        // straddled a frame boundary (mass stale_frame_drop bursts with
+        // cachedFrame == currentFrame-1 — reads as whole-scene flicker/"ripping"
+        // during fast camera scrolls). Two+ frames stale keeps the drop (the
+        // genuine wrong-slot hazard the check was built for).
+        const uint32_t cf_stamp = rng.multi->getCachedFrame();
+        if (cf_stamp != currentFrame && cf_stamp + 1u != currentFrame) {
             if (isFirstFlush) {
                 ++s_firstFrameSkipCount;
                 static int s_warnPrinted = 0;

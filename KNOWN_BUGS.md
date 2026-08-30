@@ -5,8 +5,8 @@ Open issues on the `macos-port` branch. One line each; fix and delete the line w
 ## UI / render
 - Thin vertical line down the far-right edge of the mission screen. Pre-existing, cause unknown.
 - Mission-results banner: a few-pixel gap between the black box and the hazard-border frame (left/top). Cosmetic, ~matches retail. See MACOS-PORT-16.
-- Promotion screen intermittent static-prop pop-in. gos_static_prop_registry.cpp.
-- Trees intermittently render as just their ground shadow with no tree model (body missing). Not fixed by zoom/LOD. Likely the static-prop registry dropping the tree instance while its shadow pass still draws. gos_static_prop_registry.cpp / TreeAppearance.
+- Promotion screen intermittent static-prop pop-in. gos_static_prop_registry.cpp. (May share the MACOS-PORT-27 cause — verify on next promotion screen.)
+- Fast camera scrolls dip framerate a bit since MACOS-PORT-27's whole-map object admission (every prop feeds update/touch + GPU cull each frame). Upgrade path: frustum-true block test in the OBJ-CULL-BYPASS site (mclib/terrain.cpp).
 
 ## Terrain / assets (data gaps, not code bugs)
 - No PBR normal detail on terrain/buildings: mat0_normal.tga..mat8_normal.tga are not built by the macOS data pipeline. Flat lighting only.

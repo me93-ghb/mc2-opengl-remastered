@@ -858,7 +858,7 @@ long TerrainObject::update (void) {
 		}
 		// gpuVisible extension: unused when readback is on (inView IS the result).
 		const bool gpuVisible = !gpu_cull::readback_isEnabled() && false;
-		if (inView || gpuVisible)
+		if (inView || gpuVisible || g_useGpuObjects || g_useGpuStaticProps)
 		{
 			// MOUSE-PICK PATH DEPENDENCY (objmgr consumer). This
 			// `windowsVisible = turn;` stamp is read by
@@ -1012,7 +1012,7 @@ void TerrainObject::render (void) {
 		// Conservative-OR: render if readback OR CPU test says visible.
 		renderGate = lagVis || appearance->canBeSeen();
 	}
-	if (renderGate || g_useGpuStaticProps)
+	if (renderGate || g_useGpuStaticProps || g_useGpuObjects)
 	{
 		if (getSelected())
 		{

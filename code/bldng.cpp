@@ -1098,7 +1098,7 @@ void Building::render (void) {
 	// Under the killswitch, let the GPU clipper + per-actor submit logic
 	// decide visibility. See docs/superpowers/plans/progress/
 	// 2026-04-19-static-prop-handoff.md.
-	if (appearance->canBeSeen() || g_useGpuStaticProps)
+	if (appearance->canBeSeen() || g_useGpuStaticProps || g_useGpuObjects)
 	{
 		//--------------------------------------
 		if (getDrawBars())

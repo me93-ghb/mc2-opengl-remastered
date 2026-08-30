@@ -597,7 +597,7 @@ void Gate::render (void)
 	// Mirror Building::render: bypass canBeSeen() cull when the GPU
 	// static-prop path is on — the legacy angular cull has a huge
 	// false-negative rate at wolfman zoom.
-	if (appearance->canBeSeen() || g_useGpuStaticProps)
+	if (appearance->canBeSeen() || g_useGpuStaticProps || g_useGpuObjects)
 	{
 		//--------------------------------------
 		if (getDrawBars())

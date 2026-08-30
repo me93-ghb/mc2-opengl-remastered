@@ -1331,7 +1331,7 @@ void Artillery::render (void)
 	// (aerial bombers, etc.) can be spawned mid-mission and their
 	// inView flag has the same wolfman-zoom false-negative problem as
 	// every other actor class.
-	if (inView || g_useGpuStaticProps)
+	if (inView || g_useGpuStaticProps || g_useGpuObjects)
 	{
 		if (hitEffect )
 		{

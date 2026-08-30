@@ -4100,6 +4100,32 @@ void Terrain::geometry (void)
 	// 8z-A1: Phase 8a/8b A/B diagnostic blocks (MC2_TERRAIN_ACTIVE_AB,
 	// MC2_TERRAIN_SOLID_AB) deleted — 8a/8b/8c shipped, FN=0 validated.
 
+	// macos-port OBJ-CULL-BYPASS: under the GPU object path, admit EVERY terrain
+	// object block/vertex. The chunk producer's angular cone replicates the legacy
+	// cull's false negatives (its FN=0 proof was parity vs LEGACY, not vs frustum
+	// truth), and even the additive AABB fallback above rejected on-screen blocks
+	// (mission-3 block 10: whole tree lines + FactoryLg popped for seconds —
+	// POP_TRACE showed blockActive=0/vertActive=0 on visibly on-screen clusters).
+	// The GPU frustum cull downstream owns per-prop visibility; the CPU cascade's
+	// only remaining job is feeding update/touch + render submission, which must
+	// not lie. Consumers (objmgr update/render loops) unchanged — cascade shape
+	// preserved per cull_gates_are_load_bearing.md.
+	// ponytail: whole-map admission, O(objects) touch cost per frame; re-cull via
+	// a frustum-true block test if profiling ever shows this hot.
+	// Killswitch: MC2_OBJ_BLOCK_CULL_LEGACY=1 restores the culled cascade.
+	{
+		extern bool g_useGpuObjects;
+		static const bool s_objCullLegacy =
+			(getenv("MC2_OBJ_BLOCK_CULL_LEGACY") != nullptr);
+		if (g_useGpuObjects && !s_objCullLegacy && objBlockInfo && objVertexActive)
+		{
+			for (long b = 0; b < numObjBlocks; ++b)
+				objBlockInfo[b].active = true;
+			memset(objVertexActive, 1,
+			       (size_t)(realVerticesMapSide * realVerticesMapSide) * sizeof(bool));
+		}
+	}
+
 	//-----------------------------------
 	// setup terrain quad textures
 	// Also sets up mine data.

@@ -2392,6 +2392,49 @@ void GameObjectManager::update (bool terrain, bool movers, bool other)
 		gpu_cull::readback_buildActorVisSnapshot(4096u);
 	}
 
+	// macos-port MC2_POP_TRACE=<name-substring>: edge-triggered admission trace
+	// for the intermittent prop pop-in/out hunt. For every terrain object whose
+	// appearance-type name matches, log a line whenever any admission gate FLIPS:
+	//   blockActive  — Terrain::objBlockInfo[block].active (objmgr render loop gate 1)
+	//   vertActive   — Terrain::objVertexActive[vertexNum] (objmgr render loop gate 2)
+	//   updSeen      — windowsVisible == turn-1 (update-side inView stamp last turn)
+	// Edge-triggered: silent while stable, one line per transition per object.
+	{
+		static const char* s_popPat = getenv("MC2_POP_TRACE");
+		if (s_popPat && s_popPat[0] && terrain && Terrain::objBlockInfo && Terrain::objVertexActive)
+		{
+			static std::unordered_map<long, unsigned char> s_popLast;
+			for (long b = 0; b < Terrain::numObjBlocks; ++b)
+			{
+				const bool blockAct = Terrain::objBlockInfo[b].active;
+				long numObjs  = Terrain::objBlockInfo[b].numObjects;
+				long objIndex = Terrain::objBlockInfo[b].firstHandle;
+				for (long i = 0; i < numObjs; ++i, ++objIndex)
+				{
+					GameObjectPtr obj = objList[objIndex];
+					if (!obj || !obj->getExists()) continue;
+					AppearancePtr app = obj->getAppearance();
+					AppearanceTypePtr at = app ? app->getAppearanceType() : NULL;
+					const char* nm = at ? at->name : NULL;
+					if (!nm || (s_popPat[0] != '*' && !strcasestr(nm, s_popPat))) continue;
+					const bool vertAct = Terrain::objVertexActive[obj->getVertexNum()] != 0;
+					const bool updSeen = (obj->getWindowsVisible() >= turn - 1);
+					const unsigned char st = (blockAct ? 1 : 0) | (vertAct ? 2 : 0) | (updSeen ? 4 : 0);
+					std::unordered_map<long, unsigned char>::iterator it = s_popLast.find(objIndex);
+					if (it == s_popLast.end() || it->second != st)
+					{
+						fprintf(stderr,
+							"[POP_TRACE] turn=%ld obj=%ld name=%s block=%ld blockActive=%d vertActive=%d updSeen=%d vtx=%ld\n",
+							turn, objIndex, nm, b, (int)blockAct, (int)vertAct, (int)updSeen,
+							(long)obj->getVertexNum());
+						fflush(stderr);
+						s_popLast[objIndex] = st;
+					}
+				}
+			}
+		}
+	}
+
 	// Tier-1 instrumentation (stability spec §3.3): single source of truth for
 	// framesSinceActive. One sweep over objList covers every GameObject this
 	// manager owns. Uses the three virtual accessors added on GameObject base.

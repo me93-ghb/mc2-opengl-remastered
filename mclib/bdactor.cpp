@@ -2094,7 +2094,7 @@ long BldgAppearance::render (long depthFixup)
 	// the GPU path we render every actor and trust the GPU.
 	// PREVIEW-FIX: the SimpleCamera component/weapon preview (MechLab loadout)
 	// owns visibility via the UI; force the render gate on in that context.
-	if (inView || g_useGpuStaticProps || g_mechPreviewRenderDepth > 0)
+	if (inView || g_useGpuStaticProps || g_useGpuObjects || g_mechPreviewRenderDepth > 0)
 	{
 		uint32_t color = SD_BLUE;
 		uint32_t highLight = 0x007f7f7f;
@@ -2315,6 +2315,24 @@ long BldgAppearance::render (long depthFixup)
 			{
 				GpuStaticPropBatcher::instance().recordCpuFallback(
 					GpuStaticPropPopulation::Building);
+			}
+			// macos-port MC2_POP_TRACE: edge-log submit outcome flips for matched types
+			// (pairs with the objmgr [POP_TRACE] gate sweep; together they show whether
+			// a popped actor stopped being rendered or stopped being accepted).
+			{
+				static const char* s_popPat = getenv("MC2_POP_TRACE");
+				if (s_popPat && s_popPat[0] && appearType && (s_popPat[0] == '*' || strcasestr(appearType->name, s_popPat))) {
+					static std::unordered_map<void*, unsigned char> s_lastSub;
+					const unsigned char st = submittedToGpu ? 1 : 0;
+					auto it = s_lastSub.find(this);
+					if (it == s_lastSub.end() || it->second != st) {
+						fprintf(stderr, "[POP_TRACE] bldg=%p name=%s submitted=%d recipeIdx=%d registered=%d\n",
+							(void*)this, appearType->name, (int)st,
+							staticReg.recipeIndex, (int)staticReg.registered);
+						fflush(stderr);
+						s_lastSub[this] = st;
+					}
+				}
 			}
 		}
 		// Legacy bypass-cull path (g_useGpuStaticProps). Mutually exclusive
@@ -3380,7 +3398,7 @@ long BldgAppearance::update (bool animate)
 	// Under the GPU static-prop path, compute xlatPosition/rot + fog/light
 	// for every building so the later TransformMultiShape (also gated on
 	// g_useGpuStaticProps) has valid inputs.
-	if (inView || g_useGpuStaticProps)
+	if (inView || g_useGpuStaticProps || g_useGpuObjects)
 	{
 		if (appearType->spinMe)
 			rotation += SPINRATE * frameLength;
@@ -3526,7 +3544,7 @@ long BldgAppearance::update (bool animate)
 	// Under the GPU static-prop path we need listOfColors / shapeToWorld
 	// fresh every frame regardless of inView so the batcher can safely
 	// memcpy from shape->listOfColors during submit().
-	if (inView || g_useGpuStaticProps)
+	if (inView || g_useGpuStaticProps || g_useGpuObjects)
 	{
 		bldgShape->SetUseShadow(false);
 
@@ -6063,7 +6081,7 @@ long TreeAppearance::render (long depthFixup)
 	// Mirror BldgAppearance::render: bypass inView under GPU path — the
 	// GPU clipper decides visibility, and the legacy angular cull has a
 	// ~87% false-negative rate at wolfman zoom.
-	if (inView || g_useGpuStaticProps)
+	if (inView || g_useGpuStaticProps || g_useGpuObjects)
 	{
 		long color = SD_BLUE;
 		//unsigned long highLight = 0x007f7f7f;
@@ -6204,6 +6222,23 @@ long TreeAppearance::render (long depthFixup)
 			{
 				GpuStaticPropBatcher::instance().recordCpuFallback(
 					GpuStaticPropPopulation::Tree);
+			}
+			// macos-port MC2_POP_TRACE: see BldgAppearance::render twin.
+			{
+				static const char* s_popPat = getenv("MC2_POP_TRACE");
+				if (s_popPat && s_popPat[0] && appearType && (s_popPat[0] == '*' || strcasestr(appearType->name, s_popPat))) {
+					static std::unordered_map<void*, unsigned char> s_lastSub;
+					const unsigned char st = submittedToGpu ? 1 : 0;
+					auto it = s_lastSub.find(this);
+					if (it == s_lastSub.end() || it->second != st) {
+						fprintf(stderr, "[POP_TRACE] tree=%p name=%s submitted=%d recipeIdx=%d registered=%d activeLOD=%d\n",
+							(void*)this, appearType->name, (int)st,
+							staticReg[activeLOD].recipeIndex, (int)staticReg[activeLOD].registered,
+							(int)activeLOD);
+						fflush(stderr);
+						s_lastSub[this] = st;
+					}
+				}
 			}
 		}
 		// Legacy bypass-cull path. Mutually exclusive with slice 1 — gated on
@@ -6450,7 +6485,7 @@ long TreeAppearance::update (bool animate)
 	// Under the GPU static-prop path we need listOfColors / shapeToWorld
 	// fresh every frame regardless of inView so submitMultiShape can safely
 	// read shape->listOfVertices during submit().
-	if (inView || g_useGpuStaticProps)
+	if (inView || g_useGpuStaticProps || g_useGpuObjects)
 	{
 		treeShape->SetUseShadow(false);
 
