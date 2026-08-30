@@ -655,7 +655,23 @@ void MissionBriefingScreen::begin()
 	}
 
 
-	addLBItem( blurb, 0xff005392, -1 );
+	// macos-port: the raw blurb carries legacy '\' font-control chars (rendered
+	// literally by the port's font path) and lands in ONE giant sizeToText list
+	// item. An item taller than the listbox makes the retail overflow masks
+	// (gui/alistbox.cpp aListBox::render "draw black box") paint item-height
+	// black bands over the panel chrome at scaled resolutions. Clean the text
+	// and pre-wrap into one-line items (same treatment the defs path gives this
+	// string in syncObjectivesToDefs) so masks stay retail-sized.
+	// ponytail: 55-char wrap approximates the legacy listbox line; a too-long
+	// line just wraps inside its item (2 lines, still small). Revisit only if a
+	// font/list width change makes lines visibly ragged.
+	{
+		std::vector<std::string>  blurbLines;
+		std::vector<unsigned int> blurbColors;
+		appendWrapped( blurbLines, blurbColors, cleanBriefingText( blurb ), 0xff005392, 55 );
+		for ( size_t i = 0; i < blurbLines.size(); ++i )
+			addLBItem( blurbLines[i].c_str(), 0xff005392, -1 );
+	}
 
 	// Route the objectives into the defs GuiList, then keep the listbox populated (the
 	// auto-cycle highlight logic reads its items) but move it off-screen so the legacy
