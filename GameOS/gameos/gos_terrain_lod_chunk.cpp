@@ -633,6 +633,14 @@ static GLint    s_locAtlasTLX       = -1;  // Phase 10: atlas top-left X (world)
 static GLint    s_locAtlasTLY       = -1;  // Phase 10: atlas top-left Y (world)
 static GLint    s_locAtlasOOW       = -1;  // Phase 10: atlas oneOverWorldUnitsMapSide
 static GLint    s_locLightDir       = -1;  // Phase 10 Step 1b: terrainLightDir (sun)
+// macos-port: NIGHT-LIGHT-EPIC mission-light uniforms (cement/overlay night dim).
+static GLint    s_locMissionAmbient     = -1;
+static GLint    s_locMissionSun         = -1;
+static GLint    s_locMissionNightFactor = -1;
+// macos-port: NIGHT-LIGHT-EPIC world light pools (spotlights/mech lights/lamps).
+static GLint    s_locMlGridParams       = -1;
+static GLint    s_locMlGridDims         = -1;
+static GLint    s_locMlTune             = -1;
 static GLint    s_locDiag           = -1;  // bisection bitmask (MC2_TERRAIN_LOD_CHUNK_DIAG)
 static GLint    s_locLightDebugView = -1;  // LIGHTING-DEBUG-VIEWS-1A-CHUNK: u_lightingDebugView
 static GLint    s_locPathTint       = -1;  // MC2_SHADER_PATH_TINT debug (u_pathTint)
@@ -1109,6 +1117,13 @@ void gos_TerrainLodChunk_Init()
             s_locAtlasTLY     = glGetUniformLocation(s_terrainProgram, "u_atlasTopLeftY");
             s_locAtlasOOW     = glGetUniformLocation(s_terrainProgram, "u_atlasOneOverWorldUnits");
             s_locLightDir     = glGetUniformLocation(s_terrainProgram, "terrainLightDir");
+            // macos-port: NIGHT-LIGHT-EPIC mission-light uniforms.
+            s_locMissionAmbient     = glGetUniformLocation(s_terrainProgram, "u_missionAmbient");
+            s_locMissionSun         = glGetUniformLocation(s_terrainProgram, "u_missionSun");
+            s_locMissionNightFactor = glGetUniformLocation(s_terrainProgram, "u_missionNightFactor");
+            s_locMlGridParams       = glGetUniformLocation(s_terrainProgram, "u_mlGridParams");
+            s_locMlGridDims         = glGetUniformLocation(s_terrainProgram, "u_mlGridDims");
+            s_locMlTune             = glGetUniformLocation(s_terrainProgram, "u_mlTune");
             s_locDiag         = glGetUniformLocation(s_terrainProgram, "u_diag");
             s_locLightDebugView = glGetUniformLocation(s_terrainProgram, "u_lightingDebugView"); // LIGHTING-DEBUG-VIEWS-1A-CHUNK
             s_locPathTint     = glGetUniformLocation(s_terrainProgram, "u_pathTint");
@@ -1813,6 +1828,29 @@ void gos_TerrainLodChunk_SubmitDrawCommands(
             float lx = 0.f, ly = 0.f, lz = 1.f;
             gos_GetTerrainLightDir(&lx, &ly, &lz);
             glUniform4f(s_locLightDir, lx, ly, lz, 0.0f);
+        }
+        // macos-port: NIGHT-LIGHT-EPIC — mission-light for the cement branch +
+        // overlay sidecar (surfaces with no colormap burn-in). nightFactor==0
+        // on day missions -> shader branch is a no-op (byte-identical).
+        if (s_locMissionNightFactor >= 0) {
+            float mAmb[3], mSun[3], mNf = 0.0f; int mNight = 0;
+            gos_GetMissionLight(mAmb, mSun, &mNf, &mNight);
+            if (s_locMissionAmbient >= 0) glUniform3fv(s_locMissionAmbient, 1, mAmb);
+            if (s_locMissionSun >= 0)     glUniform3fv(s_locMissionSun, 1, mSun);
+            glUniform1f(s_locMissionNightFactor, mNf);
+        }
+        // macos-port: NIGHT-LIGHT-EPIC — world light pools via the shared
+        // light grid (build-if-dirty + SSBO bind on 28/29 inside).
+        if (s_locMlGridDims >= 0) {
+            float mlp[4]; int mld[2];
+            gos_BindMissionLightGrid(mlp, mld);
+            if (s_locMlGridParams >= 0) glUniform4fv(s_locMlGridParams, 1, mlp);
+            glUniform2i(s_locMlGridDims, mld[0], mld[1]);
+            if (s_locMlTune >= 0) {
+                float mlt[4];
+                gos_GetMissionLightTune(mlt);
+                glUniform4fv(s_locMlTune, 1, mlt);
+            }
         }
     }
 

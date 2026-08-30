@@ -145,6 +145,10 @@ uniform int   u_lightingDebugView;
 
 uniform int   u_pathTint;  // MC2_SHADER_PATH_TINT: 1 = solid signature colour (debug); 0 = normal
 
+// macos-port: NIGHT-LIGHT-EPIC — pitch-derived night factor (0 = day). Used to
+// relax the alpha-test brightness floor below so trees/foliage darken at night.
+uniform float u_missionNightFactor;
+
 // TERRAIN-DECAL-FILL-1: ambient/fill floor for the cliff-wall mesh-decal's
 // shadow side. The static-prop vertex lighting is max(N·L,0) with no ambient
 // floor, so a face pointing away from the sun goes to ~0 (black void). This
@@ -369,7 +373,9 @@ void main() {
     if ((materialFlags & ALPHA_TEST_BIT) != 0) {
         // Tree cards/leaves read too black on the light-facing falloff side.
         // Keep their lighting variation, but cap the darkest side at ~50%.
-        litRgb = max(litRgb, vec3(0.5));
+        // macos-port: NIGHT-LIGHT-EPIC — the 0.5 floor kept trees half-bright
+        // in the dark; relax it toward ~0.15 at full night.
+        litRgb = max(litRgb, vec3(mix(0.5, 0.15, clamp(u_missionNightFactor, 0.0, 1.0))));
     }
     // TERRAIN-DECAL-FILL-1 (v2): raise the cliff-decal's shadow-side brightness.
     // NOTE: the old max(litRgb, fill) was a visual no-op -- the baked per-vertex

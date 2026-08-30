@@ -379,6 +379,11 @@ class Mech3DAppearance: public ObjectAppearance
 		std::vector<TG_LightPtr>	spotlightLights_;    // owned via malloc/free
 		std::vector<DWORD>			spotlightSlotIds_;   // worldLights[] indices
 		bool						spotlightsRegistered_;
+		// macos-port: NIGHT-LIGHT-EPIC — turn the mesh was last actually
+		// rendered. `visible` is camera-frustum only; a fog-of-war-hidden
+		// enemy is "visible" but never drawn, and its search light leaked
+		// its position. Stamped in render(); consumed by the light gate.
+		long						spotlightLastDrawnTurn_ = -10;
 		
 		float						idleTime;				//Elapsed time since I've done something.
 															//If it gets larger then X, play the idle animation.

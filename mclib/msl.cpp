@@ -2073,6 +2073,49 @@ void TG_MultiShape::Render (bool refreshTextures, float forceZ)
 	}
 }	
 
+// macos-port: NIGHT-LIGHT-EPIC — see msl.h. Mirrors Render() without the
+// texture refresh, gated to SpotLight_ children only.
+void TG_MultiShape::RenderSpotlightChildren (float forceZ)
+{
+	// MC2_SPOTCONE_TRACE=1: one-shot per-child state dump to pin where the
+	// beam dies (transform never ran / verts NULL / zero visible faces).
+	static const bool s_coneTrace = (getenv("MC2_SPOTCONE_TRACE") != nullptr);
+	static int s_coneTraceLines = 0;
+	for (long i=0;i<numTG_Shapes;i++)
+	{
+		if (listOfShapes[i].processMe && listOfShapes[i].node &&
+			listOfShapes[i].node->GetIsSpotlight())
+		{
+			Stuff::Matrix4D  shapeToClip;
+			shapeToClip.Multiply(listOfShapes[i].shapeToWorld, TG_Shape::s_worldToClip);
+
+			if (s_coneTrace && s_coneTraceLines < 24)
+			{
+				++s_coneTraceLines;
+				TG_Shape* c = listOfShapes[i].node;
+				// OR of the baked per-vertex lit colours: 0xff000000 across the
+				// whole child == the cone is entirely black == invisible under
+				// the additive MC2_ISSPOTLGT blend (the current suspect).
+				unsigned orArgb = 0;
+				if (c->listOfVertices)
+					for (long vi = 0; vi < c->numVertices; ++vi)
+						orArgb |= (unsigned)c->listOfVertices[vi].argb;
+				fprintf(stderr,
+					"[SPOTCONE v1] multi=%p child=%ld node=%s verts=%ld visFaces=%ld "
+					"lv=%p lc=%p lastTurn=%ld turn=%ld alpha=%u or_argb=0x%08x\n",
+					(void*)this, i, c->getNodeName() ? c->getNodeName() : "?",
+					c->numVertices, c->numVisibleFaces,
+					(void*)c->listOfVertices, (void*)c->listOfColors,
+					c->lastTurnTransformed, turn, (unsigned)alphaValue, orArgb);
+				fflush(stderr);
+			}
+
+			Stuff::Matrix4D shape2world(listOfShapes[i].shapeToWorld);
+			listOfShapes[i].node->Render(forceZ,isHudElement,alphaValue,isClamped, &shapeToClip, &shape2world);
+		}
+	}
+}
+
 //-------------------------------------------------------------------------------
 //This function takes the current listOfVisibleFaces and draws them using
 //gos_DrawTriangle.

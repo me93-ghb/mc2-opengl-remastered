@@ -136,6 +136,13 @@ uniform float u_ambientV1Strength;
 uniform vec3  u_iblSh[9];
 uniform float u_iblShStrength;
 
+// macos-port: NIGHT-LIGHT-EPIC — real eye night state ('uniform uint' crashes
+// this engine's shader compile, so int). Wired into get_base_light below so
+// the hot-colour magic (lit windows / outside lights / base lights) glows at
+// night exactly like the CPU path (tgl.cpp:1987+). Day: 0/0.0 -> unchanged.
+uniform int   u_missionIsNight;
+uniform float u_missionNightFactor;
+
 // V-MATERIAL-PBR-3: PBR uniforms (u_pbrV1Strength, u_pbrV1RoughnessOverride,
 // u_pbrV1DiagSunFound) MOVED to static_prop.frag — the PBR math now runs
 // per-fragment so the localized specular highlight is no longer averaged
@@ -329,9 +336,12 @@ void main() {
     //         passes lit=base_light → 0x2F2F2F. MATCHES CPU.
     const uint kFlagIsLightsOut = (1u << 0);
     bool lightsOut = (inst.flags & kFlagIsLightsOut) != 0u;
+    // macos-port: NIGHT-LIGHT-EPIC — was stubbed false/0.0 ("pending eye-state
+    // UBO wiring"); now fed the real per-frame night state so windows and
+    // building night-lights come on at night, matching CPU tgl.cpp.
     vec3 base_light = get_base_light(
         perVertexARGB,
-        false, 0.0, false, lightsOut,
+        u_missionIsNight != 0, u_missionNightFactor, false, lightsOut,
         ptd.hotPinkRGB.rgb,
         ptd.hotYellowRGB.rgb,
         ptd.hotGreenRGB.rgb);

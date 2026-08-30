@@ -322,6 +322,12 @@ class BldgAppearance : public ObjectAppearance
 		std::vector<DWORD>							spotlightSlotIds_;
 		std::vector<int>							spotlightNodeIds_;  // bldgShape NodeNameId
 		bool										spotlightsRegistered_;
+
+		// macos-port: NIGHT-LIGHT-EPIC — should this building run the full CPU
+		// bake for its SpotLight_ beam cones this frame? Shared by update()
+		// (transform choice) and render() (RenderSpotlightChildren) so the two
+		// sides always agree. Night + lights on + near the camera.
+		bool spotlightConeBakeWanted_ (void) const;
 		
 		bool										fogLightSet;
 		DWORD										lightRGB;

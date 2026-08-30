@@ -254,6 +254,10 @@ class GVAppearance : public ObjectAppearance
 		std::vector<TG_LightPtr>					spotlightLights_;    // owned via malloc/free
 		std::vector<DWORD>							spotlightSlotIds_;   // worldLights[] indices
 		bool										spotlightsRegistered_;
+		// macos-port: NIGHT-LIGHT-EPIC — turn the mesh was last actually
+		// rendered (see mech3d.h twin). Fog-of-war-hidden vehicles must not
+		// leak their position through the search-light ground pool.
+		long										spotlightLastDrawnTurn_ = -10;
 
  	public:
 

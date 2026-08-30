@@ -2508,6 +2508,14 @@ class gosRenderer {
             // ROAD-MATERIAL-GRAVEL-1: gravel albedo sampler (terrain_overlay.frag
             // v_matId==2). Only declared on overlayProg_; decalProg_ leaves it -1.
             GLint gravelAlbedo                       = -1;  // sampler2D
+            // macos-port: NIGHT-LIGHT-EPIC mission-light uniforms (overlayProg_
+            // only; decalProg_ doesn't declare them and stays -1/skipped).
+            GLint missionAmbient                     = -1;  // vec3
+            GLint missionSun                         = -1;  // vec3
+            GLint missionNightFactor                 = -1;  // float
+            GLint mlGridParams                       = -1;  // vec4
+            GLint mlGridDims                         = -1;  // ivec2
+            GLint mlTune                             = -1;  // vec4
         };
         OverlayUniformLocs_ overlayLocs_;
         OverlayUniformLocs_ decalLocs_;
@@ -5087,6 +5095,13 @@ void gosRenderer::init() {
         locs.asphaltScale    = glGetUniformLocation(shp, "u_asphaltScale");
         // ROAD-MATERIAL-GRAVEL-1: gravel albedo sampler (overlayProg_ only).
         locs.gravelAlbedo    = glGetUniformLocation(shp, "u_gravelAlbedo");
+        // macos-port: NIGHT-LIGHT-EPIC mission-light uniforms (overlayProg_ only).
+        locs.missionAmbient     = glGetUniformLocation(shp, "u_missionAmbient");
+        locs.missionSun         = glGetUniformLocation(shp, "u_missionSun");
+        locs.missionNightFactor = glGetUniformLocation(shp, "u_missionNightFactor");
+        locs.mlGridParams       = glGetUniformLocation(shp, "u_mlGridParams");
+        locs.mlGridDims         = glGetUniformLocation(shp, "u_mlGridDims");
+        locs.mlTune             = glGetUniformLocation(shp, "u_mlTune");
     };
     { ZoneScopedN("gosRenderer::init overlayUniforms"); cacheOverlayLocs(overlayProg_, overlayLocs_); cacheOverlayLocs(decalProg_, decalLocs_); }
     timeStart_ = timing::get_wall_time_ms();
@@ -9430,6 +9445,183 @@ void gos_GetTerrainLightDir(float* x, float* y, float* z) {
 void gos_SetTerrainLightDir(float x, float y, float z) {
     if (g_gos_renderer) g_gos_renderer->setTerrainLightDir(x, y, z);
 }
+// macos-port: NIGHT-LIGHT-EPIC — per-frame mission-light state (see gameos.hpp).
+// Plain file-scope state: written once per frame by GameCamera::render, read by
+// the overlay/chunk/static-prop uniform upload sites.
+static float s_missionAmbient[3]   = {1.0f, 1.0f, 1.0f};
+static float s_missionSun[3]       = {1.0f, 1.0f, 1.0f};
+static float s_missionNightFactor  = 0.0f;
+static int   s_missionIsNight      = 0;
+void gos_SetMissionLight(float ambR, float ambG, float ambB,
+                         float sunR, float sunG, float sunB,
+                         float nightFactor, int isNight) {
+    s_missionAmbient[0] = ambR; s_missionAmbient[1] = ambG; s_missionAmbient[2] = ambB;
+    s_missionSun[0] = sunR; s_missionSun[1] = sunG; s_missionSun[2] = sunB;
+    s_missionNightFactor = nightFactor;
+    s_missionIsNight = isNight;
+}
+static float s_missionPointLights[GOS_MAX_MISSION_POINT_LIGHTS * 8];
+static int   s_missionPointLightCount = 0;
+static bool  s_missionLightsDirty = false;   // grid rebuild pending
+void gos_SetMissionPointLights(int count, const float* data8PerLight) {
+    if (count < 0) count = 0;
+    if (count > GOS_MAX_MISSION_POINT_LIGHTS) count = GOS_MAX_MISSION_POINT_LIGHTS;
+    s_missionPointLightCount = count;
+    if (count > 0 && data8PerLight)
+        memcpy(s_missionPointLights, data8PerLight, (size_t)count * 8 * sizeof(float));
+    else
+        s_missionPointLightCount = 0;
+    s_missionLightsDirty = true;
+}
+
+// macos-port: NIGHT-LIGHT-EPIC — mission light grid (see gameos.hpp). 256wu
+// cells over the playable map; per-cell cap 15 lights, kept STRONGEST-first
+// (falloff at the cell centre). First-come selection made adjacent cells keep
+// different lamp subsets on dense bases — visible grid seams (user-reported);
+// keeping each cell's strongest and dropping only the weak tail keeps borders
+// continuous (the dropped lights contribute ~nothing at that cell anyway).
+static constexpr int   kMlGridMaxCells = 96;      // per axis
+static constexpr int   kMlCellCap      = 15;      // lights per cell (16 uints/cell)
+static constexpr float kMlGridCellWu   = 256.0f;
+void gos_BindMissionLightGrid(float outParams[4], int outDims[2]) {
+    static GLuint s_mlDataSsbo = 0, s_mlGridSsbo = 0;
+    static int    s_cellsX = 0, s_cellsY = 0;
+    static float  s_originX = 0.0f, s_originY = 0.0f;
+
+    outParams[0] = outParams[1] = outParams[2] = outParams[3] = 0.0f;
+    outDims[0] = outDims[1] = 0;
+
+    gosPostProcess* pp = getGosPostProcess();
+    const float halfExt = pp ? pp->getMapHalfExtent() : 0.0f;
+    if (halfExt <= 0.0f || s_missionPointLightCount <= 0)
+        return;   // no map extent yet / no lights: shader-side dims 0 skips
+
+    if (s_missionLightsDirty) {
+        s_missionLightsDirty = false;
+        s_originX = -halfExt;
+        s_originY = -halfExt;
+        int cells = (int)((2.0f * halfExt) / kMlGridCellWu) + 1;
+        if (cells < 1) cells = 1;
+        if (cells > kMlGridMaxCells) cells = kMlGridMaxCells;
+        s_cellsX = s_cellsY = cells;
+        const float invCell = 1.0f / kMlGridCellWu;
+
+        static std::vector<uint32_t> grid;      // 16 uints per cell: count + 15 idx
+        static std::vector<float>    strength;  // parallel per-slot strength
+        grid.assign((size_t)s_cellsX * s_cellsY * 16, 0u);
+        strength.assign((size_t)s_cellsX * s_cellsY * kMlCellCap, 0.0f);
+        for (int li = 0; li < s_missionPointLightCount; ++li) {
+            const float* d = s_missionPointLights + li * 8;
+            const float lx = d[0], ly = d[1], farD = d[3], closeD = d[7];
+            const float luma = 0.299f * d[4] + 0.587f * d[5] + 0.114f * d[6];
+            int cx0 = (int)((lx - farD - s_originX) * invCell);
+            int cx1 = (int)((lx + farD - s_originX) * invCell);
+            int cy0 = (int)((ly - farD - s_originY) * invCell);
+            int cy1 = (int)((ly + farD - s_originY) * invCell);
+            if (cx0 < 0) cx0 = 0; if (cy0 < 0) cy0 = 0;
+            if (cx1 >= s_cellsX) cx1 = s_cellsX - 1;
+            if (cy1 >= s_cellsY) cy1 = s_cellsY - 1;
+            for (int cy = cy0; cy <= cy1; ++cy)
+                for (int cx = cx0; cx <= cx1; ++cx) {
+                    // Strength = falloff at the cell centre, weighted by the
+                    // light's luminance — the per-cell keep/drop priority.
+                    const float ccx = s_originX + ((float)cx + 0.5f) * kMlGridCellWu;
+                    const float ccy = s_originY + ((float)cy + 0.5f) * kMlGridCellWu;
+                    const float ddx = lx - ccx, ddy = ly - ccy;
+                    const float dist = sqrtf(ddx * ddx + ddy * ddy);
+                    float fall = (farD - dist) / (farD - closeD > 1e-3f ? farD - closeD : 1e-3f);
+                    if (fall > 1.0f) fall = 1.0f;
+                    if (fall < 0.0f) fall = 0.0f;
+                    const float st = fall * (luma > 0.0f ? luma : 1e-3f);
+
+                    uint32_t* cell = grid.data() + ((size_t)cy * s_cellsX + cx) * 16;
+                    float* cellSt  = strength.data() + ((size_t)cy * s_cellsX + cx) * kMlCellCap;
+                    int cnt = (int)cell[0];
+                    if (cnt < kMlCellCap) {
+                        // Insert sorted (strongest first) into the open slot.
+                        int at = cnt;
+                        while (at > 0 && cellSt[at - 1] < st) {
+                            cellSt[at] = cellSt[at - 1];
+                            cell[1 + at] = cell[at];
+                            --at;
+                        }
+                        cellSt[at] = st;
+                        cell[1 + at] = (uint32_t)li;
+                        cell[0] = (uint32_t)(cnt + 1);
+                    } else if (st > cellSt[kMlCellCap - 1]) {
+                        // Full: displace the weakest, keep sorted.
+                        int at = kMlCellCap - 1;
+                        while (at > 0 && cellSt[at - 1] < st) {
+                            cellSt[at] = cellSt[at - 1];
+                            cell[1 + at] = cell[at];
+                            --at;
+                        }
+                        cellSt[at] = st;
+                        cell[1 + at] = (uint32_t)li;
+                    }
+                }
+        }
+
+        // Light data as vec4 pairs (posRad, colClose) — same 8-float records.
+        if (!s_mlDataSsbo) glGenBuffers(1, &s_mlDataSsbo);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, s_mlDataSsbo);
+        glBufferData(GL_SHADER_STORAGE_BUFFER,
+                     (GLsizeiptr)((size_t)s_missionPointLightCount * 8 * sizeof(float)),
+                     s_missionPointLights, GL_DYNAMIC_DRAW);
+        if (!s_mlGridSsbo) glGenBuffers(1, &s_mlGridSsbo);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, s_mlGridSsbo);
+        glBufferData(GL_SHADER_STORAGE_BUFFER,
+                     (GLsizeiptr)(grid.size() * sizeof(uint32_t)),
+                     grid.data(), GL_DYNAMIC_DRAW);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    }
+    if (!s_mlDataSsbo || s_cellsX <= 0)
+        return;
+
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 28, s_mlDataSsbo);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 29, s_mlGridSsbo);
+    outParams[0] = s_originX;
+    outParams[1] = s_originY;
+    outParams[2] = 1.0f / kMlGridCellWu;
+    outDims[0] = s_cellsX;
+    outDims[1] = s_cellsY;
+}
+void gos_GetMissionPointLights(int* count, const float** data8PerLight) {
+    if (count) *count = s_missionPointLightCount;
+    if (data8PerLight) *data8PerLight = s_missionPointLights;
+}
+// macos-port: NIGHT-LIGHT-EPIC dev tuner (see gameos.hpp). Defaults reproduce
+// the untuned shader; the file is only consulted under MC2_NIGHT_TUNE=1.
+void gos_GetMissionLightTune(float out4[4]) {
+    static float s_tune[4] = {1.0f, 1.0f, 0.30f, 0.0f};
+    static const bool s_tuneEnabled = []() {
+        const char* v = getenv("MC2_NIGHT_TUNE");
+        return v && v[0] == '1';
+    }();
+    if (s_tuneEnabled) {
+        static uint64_t s_lastRead = 0;
+        const uint64_t now = timing::get_wall_time_ms();
+        if (now - s_lastRead > 500) {
+            s_lastRead = now;
+            if (FILE* f = fopen("night_tune.txt", "r")) {
+                float g = 1.0f, ga = 1.0f, fl = 0.30f, gl = 0.0f;
+                if (fscanf(f, "%f %f %f %f", &g, &ga, &fl, &gl) >= 1) {
+                    s_tune[0] = g; s_tune[1] = ga; s_tune[2] = fl; s_tune[3] = gl;
+                }
+                fclose(f);
+            }
+        }
+    }
+    out4[0] = s_tune[0]; out4[1] = s_tune[1];
+    out4[2] = s_tune[2]; out4[3] = s_tune[3];
+}
+void gos_GetMissionLight(float ambient[3], float sun[3],
+                         float* nightFactor, int* isNight) {
+    if (ambient) { ambient[0] = s_missionAmbient[0]; ambient[1] = s_missionAmbient[1]; ambient[2] = s_missionAmbient[2]; }
+    if (sun)     { sun[0] = s_missionSun[0]; sun[1] = s_missionSun[1]; sun[2] = s_missionSun[2]; }
+    if (nightFactor) *nightFactor = s_missionNightFactor;
+    if (isNight)     *isNight     = s_missionIsNight;
+}
 void gos_SetTerrainDetailParams(float tiling, float strength) {
     if (g_gos_renderer) g_gos_renderer->setTerrainDetailParams(tiling, strength);
 }
@@ -9826,6 +10018,29 @@ void gosRenderer::uploadOverlayUniforms_(GLuint shp, const OverlayUniformLocs_& 
     }
 
     setupOverlayShadowsForShp(shp);
+
+    // macos-port: NIGHT-LIGHT-EPIC — mission-light for the cement/road overlay
+    // shader. nightFactor==0 on day missions makes the shader branch a no-op.
+    if (L.missionNightFactor >= 0) {
+        float mAmb[3], mSun[3], mNf = 0.0f; int mNight = 0;
+        gos_GetMissionLight(mAmb, mSun, &mNf, &mNight);
+        if (L.missionAmbient >= 0) glUniform3fv(L.missionAmbient, 1, mAmb);
+        if (L.missionSun >= 0)     glUniform3fv(L.missionSun, 1, mSun);
+        glUniform1f(L.missionNightFactor, mNf);
+    }
+    // macos-port: NIGHT-LIGHT-EPIC — world light pools on cement/roads via
+    // the shared light grid (build-if-dirty + SSBO bind on 28/29 inside).
+    if (L.mlGridDims >= 0) {
+        float mlp[4]; int mld[2];
+        gos_BindMissionLightGrid(mlp, mld);
+        if (L.mlGridParams >= 0) glUniform4fv(L.mlGridParams, 1, mlp);
+        glUniform2i(L.mlGridDims, mld[0], mld[1]);
+        if (L.mlTune >= 0) {
+            float mlt[4];
+            gos_GetMissionLightTune(mlt);
+            glUniform4fv(L.mlTune, 1, mlt);
+        }
+    }
 
     // TERRAIN-DECAL-LIGHTING-1a: extend the same terrain lighting stack
     // (NFH height tex, V1 hemi, V2 shadow-fill floor) to the cement

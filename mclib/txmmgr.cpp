@@ -3925,9 +3925,46 @@ void MC_TextureManager::renderLists (void)
 	// Downstream state is unchanged -- the post-loop reset below already
 	// sets ZWrite 0 (legacy behavior).
 	gos_SetRenderState(	gos_State_ZWrite, 0);
+	// macos-port: NIGHT-LIGHT-EPIC — the beam quad is single-sided geometry and
+	// this loop inherits whatever cull state the earlier passes left (often
+	// Cull_CW), so the beam vanished from half the camera azimuths. A light
+	// volume must show from both sides.
+	gos_SetRenderState( gos_State_Culling, gos_Cull_None);
+
+	// macos-port MC2_SPOTCONE_TRACE: one-shot draw-side dump for the beam-cone
+	// diagnosis (pairs with the [SPOTCONE v1] enqueue trace in msl.cpp).
+	static const bool s_coneDrawTrace = (getenv("MC2_SPOTCONE_TRACE") != nullptr);
+	static int s_coneDrawLines = 0;
+	// macos-port MC2_SPOTCONE_DEBUG=1: draw the beam pool with depth test OFF
+	// and blending OFF — geometry-placement oracle (silhouettes show even if
+	// the colours/blend are wrong; nothing showing = clip/order problem).
+	static const bool s_coneDrawDebug = (getenv("MC2_SPOTCONE_DEBUG") != nullptr);
+	if (s_coneDrawDebug) {
+		gos_SetRenderState( gos_State_ZCompare, 0);
+		gos_SetRenderState( gos_State_AlphaMode, gos_Alpha_OneZero);
+	}
 
 	for (int i=0;i<nextAvailableVertexNode;i++)
 	{
+		if (s_coneDrawTrace && s_coneDrawLines < 16 &&
+			(masterVertexNodes[i].flags & MC2_ISSPOTLGT))
+		{
+			++s_coneDrawLines;
+			DWORD tv = 0;
+			if (masterVertexNodes[i].vertices)
+				tv = (DWORD)(masterVertexNodes[i].currentVertex - masterVertexNodes[i].vertices);
+			gos_VERTEX* v0 = masterVertexNodes[i].vertices;
+			fprintf(stderr,
+				"[SPOTCONE v1] draw node=%d flags=0x%x texIdx=%u gosTex=%u filledVerts=%u reserved=%u "
+				"v0=(%.1f,%.1f,z=%.4f,rhw=%.5f,argb=0x%08x)\n",
+				i, (unsigned)masterVertexNodes[i].flags,
+				(unsigned)masterVertexNodes[i].textureIndex,
+				(unsigned)masterTextureNodes[masterVertexNodes[i].textureIndex].get_gosTextureHandle(),
+				(unsigned)tv, (unsigned)masterVertexNodes[i].numVertices,
+				v0 ? v0->x : -1.0f, v0 ? v0->y : -1.0f, v0 ? v0->z : -1.0f,
+				v0 ? v0->rhw : -1.0f, v0 ? (unsigned)v0->argb : 0u);
+			fflush(stderr);
+		}
 		if ((masterVertexNodes[i].flags & MC2_ISSPOTLGT) &&
 			(masterVertexNodes[i].vertices))
 		{

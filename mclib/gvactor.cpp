@@ -2179,6 +2179,10 @@ long GVAppearance::render (long depthFixup)
 		: (inView || g_useGpuStaticProps);
 	if (gvShouldRender)
 	{
+		// macos-port: NIGHT-LIGHT-EPIC — the mesh is actually being drawn this
+		// turn; the search-light gate keys off this (see gvactor.h).
+		spotlightLastDrawnTurn_ = turn;
+
 		uint32_t color = SD_BLUE;
 		uint32_t highLight = 0x007f7f7f;
 		if ((teamId > -1) && (teamId < 8)) {
@@ -2693,8 +2697,14 @@ void GVAppearance::updateGeometry (void)
 				// (sensorLevel > 4) is never true and all 39 GV spotlight
 				// registrations were stuck active=false. Generalized SpotLight_
 				// illumination should fire for any visible GV at night.
+				// macos-port: NIGHT-LIGHT-EPIC — also require the mesh to have
+				// actually been DRAWN last turn: `visible` is camera-frustum
+				// only, so a fog-of-war-hidden enemy's search light leaked its
+				// position onto the terrain (user-reported). GroundVehicle::
+				// render only calls appearance->render() on player contact.
 				spotlightLights_[k]->active =
-					(eye->isNight && visible && !InEditor);
+					(eye->isNight && visible && !InEditor
+					 && (turn - spotlightLastDrawnTurn_) <= 1);
 			}
 		}
 	//}

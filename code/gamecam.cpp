@@ -441,6 +441,55 @@ void GameCamera::render (void)
 			// which matches raw MC2 coords (Z = elevation).
 			gos_SetTerrainLightDir(lightDirection.x, lightDirection.y, lightDirection.z);
 
+			// macos-port: NIGHT-LIGHT-EPIC — publish the mission's light set
+			// (fit-loaded ambient + sun colour, pitch-derived night factor) so
+			// the cement/overlay/static-prop shaders can night-dim surfaces
+			// that have no colormap burn-in. nightFactor==0 on day missions.
+			gos_SetMissionLight(
+				ambientRed / 255.0f, ambientGreen / 255.0f, ambientBlue / 255.0f,
+				lightRed / 255.0f, lightGreen / 255.0f, lightBlue / 255.0f,
+				nightFactor, isNight ? 1 : 0);
+
+			// macos-port: NIGHT-LIGHT-EPIC — feed the active world point/spot/
+			// terrain lights (building spotlight pools, mech search lights,
+			// street lamps) to the terrain/overlay shaders. Retail burned
+			// TG_LIGHT_TERRAIN into terrain vertex lights; the LOD-chunk path
+			// ignores vertex lights, so without this every lamp pool is
+			// invisible. terrainLights[] is the updateLights()-filtered set.
+			if (nightFactor > 0.0f)
+			{
+				// All qualifying lights, capped at 256 — the consumer is a
+				// world-space light grid (gos_BindMissionLightGrid), so no
+				// nearest-N selection is needed and every camera-visible lamp
+				// lights up regardless of how many are on the map.
+				static float mplData[GOS_MAX_MISSION_POINT_LIGHTS * 8];
+				int mplCount = 0;
+				for (long li = 0; li < numTerrainLights && mplCount < GOS_MAX_MISSION_POINT_LIGHTS; ++li)
+				{
+					TG_LightPtr l = terrainLights[li];
+					if (!l || !l->active) continue;
+					if (l->lightType != TG_LIGHT_POINT &&
+						l->lightType != TG_LIGHT_SPOT &&
+						l->lightType != TG_LIGHT_TERRAIN) continue;
+					if (l->farDistance <= l->closeDistance) continue;
+					if (l->position.x < -900000.0f) continue;  // never positioned
+					DWORD c = l->GetaRGB();
+					float* d = mplData + mplCount * 8;
+					d[0] = l->position.x; d[1] = l->position.y; d[2] = l->position.z;
+					d[3] = l->farDistance;
+					d[4] = ((c >> 16) & 0xff) / 255.0f;
+					d[5] = ((c >>  8) & 0xff) / 255.0f;
+					d[6] = ( c        & 0xff) / 255.0f;
+					d[7] = l->closeDistance;
+					++mplCount;
+				}
+				gos_SetMissionPointLights(mplCount, mplData);
+			}
+			else
+			{
+				gos_SetMissionPointLights(0, NULL);
+			}
+
 			// SCENE-LIGHTING-STATE-1: mirror + parity trace (gated, self-throttled, no-op default).
 			mc2SceneLightingTrace();
 

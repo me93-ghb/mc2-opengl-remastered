@@ -459,6 +459,13 @@ class TG_MultiShape
 		//gos_DrawTriangle.
 		void Render (bool refreshTextures = false, float forceZ = -1.0f);
 
+		// macos-port: NIGHT-LIGHT-EPIC — render ONLY the SpotLight_ beam-cone
+		// children (retail additive MC2_ISSPOTLGT path). The building body stays
+		// on the GPU static-prop batcher, which skips spotlight children (T3.1);
+		// this feeds just the cones back into the legacy vertex pool. Requires a
+		// full TransformMultiShape this frame (listOfVertices populated).
+		void RenderSpotlightChildren (float forceZ = -1.0f);
+
 		//This function takes the current listOfShadowTriangles and draws them using
 		//gos_DrawTriangle.
 		void RenderShadows (bool refreshTextures = false);

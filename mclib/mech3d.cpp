@@ -2857,6 +2857,10 @@ long Mech3DAppearance::render (long depthFixup)
 			// accurate even when the actor opts out for unrelated reasons.
 			GpuMechBatcher::instance().recordEligibleActor();
 
+			// macos-port: NIGHT-LIGHT-EPIC — the mesh is actually being drawn
+			// this turn; the search-light gate keys off this (see mech3d.h).
+			spotlightLastDrawnTurn_ = turn;
+
 			// Slice C1: render-only mech GPU cull. If MC2_GPU_MECH_CULL is on
 			// AND the GPU lagged-readback says this actor was invisible last
 			// frame, skip the GPU mech submit. We DO NOT bypass mechShape->Render
@@ -3021,6 +3025,13 @@ long Mech3DAppearance::render (long depthFixup)
 			// the mech is properly depth-tested / frustum-clipped by the rasterizer.
 			// The GPU cull DOES still gate GpuMechBatcher submission (line above) so
 			// off-screen mechs are still excluded from the GPU batcher workload.
+			// macos-port: NIGHT-LIGHT-EPIC — retail search-light beam cone for
+			// GPU-submitted mechs (the batcher skips SpotLight_ children; the
+			// CPU fallback below draws them itself via the full Render walk).
+			if (gpuMechSubmitted && !spotlightLights_.empty()
+			        && eye && eye->isNight) {
+				mechShape->RenderSpotlightChildren();
+			}
 			if (!gpuMechSubmitted && g_drawMechs) {
 				// M2.5 (Q6 amendment 2): count MLR/CPU-fallback draws so
 				// the always-on per-mission mlr_mech_summary line reflects
@@ -4012,8 +4023,13 @@ void Mech3DAppearance::updateGeometry (void)
 				// any enemy mech at sensorLevel<5 is stuck active=false. The
 				// generalized path should illuminate for any visible mech at
 				// night regardless of sensor state.
+				// macos-port: NIGHT-LIGHT-EPIC — also require the mesh to have
+				// actually been DRAWN last turn (fog-of-war: hidden enemies
+				// must not leak their position via the light pool; see the
+				// gvactor.cpp twin).
 				spotlightLights_[k]->active =
-					(eye->isNight && visible && !InEditor);
+					(eye->isNight && visible && !InEditor
+					 && (turn - spotlightLastDrawnTurn_) <= 1);
 			}
 		}
 
@@ -4117,7 +4133,15 @@ void Mech3DAppearance::updateGeometry (void)
 		// listOfVertices stale, so TG_Shape::Render early-returns and the preview
 		// goes blank. Force the full transform whenever a preview render is in
 		// flight. World/tactical mechs (depth == 0) keep the GPU fast paths.
-		if (g_mechPreviewRenderDepth > 0) {
+		// macos-port: NIGHT-LIGHT-EPIC — a mech with SpotLight_ beam-cone
+		// children needs the FULL bake at night so RenderSpotlightChildren()
+		// has CPU-transformed cone vertices (GPU mech batcher skips them).
+		// NO `visible` term: it briefly gated the bake and the beam flickered
+		// out (same unreliable-signal class as the building angular cull).
+		// A handful of night mechs paying the full bake is acceptable.
+		const bool spotlightConeBake =
+			!spotlightLights_.empty() && eye && eye->isNight;
+		if (g_mechPreviewRenderDepth > 0 || spotlightConeBake) {
 			mechShape->TransformMultiShape(&xlatPosition, &qRotation);
 		} else if (g_useGpuMechs && g_useGpuMechLeafSkip && gos_IsTerrainTessellationActive()) {
 			mechShape->TransformMultiShape_HierarchyOnly(&xlatPosition, &qRotation);

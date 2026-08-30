@@ -2427,6 +2427,40 @@ void __stdcall gos_DrawDecals();
 
 // Terrain splatting API (material textures, lighting)
 void gos_SetTerrainLightDir(float x, float y, float z);
+// macos-port: NIGHT-LIGHT-EPIC — one mission-light state (the camera's current
+// ambient + sun colour and night factor) shared by every shader path that
+// renders authored-texture surfaces without colormap burn-in (cement atlas,
+// road/cement overlays, static props). Set once per frame from GameCamera::
+// render; nightFactor==0 (every day mission) makes all consumers a no-op so
+// day output stays byte-identical. Colours are 0..1.
+void gos_SetMissionLight(float ambR, float ambG, float ambB,
+                         float sunR, float sunG, float sunB,
+                         float nightFactor, int isNight);
+void gos_GetMissionLight(float ambient[3], float sun[3],
+                         float* nightFactor, int* isNight);
+// macos-port: NIGHT-LIGHT-EPIC — active world point/spot/terrain lights for
+// the terrain/overlay shaders (spotlight pools, mech search lights, street
+// lamps). 8 floats per light: pos.xyz (MC2 world), farDistance, rgb (0..1,
+// intensity-folded), closeDistance. Capped at 256 per frame — consumed via a
+// coarse world-space light GRID (see gos_BindMissionLightGrid), so every
+// camera-visible lamp lights up while each fragment only walks its own cell.
+#define GOS_MAX_MISSION_POINT_LIGHTS 256
+void gos_SetMissionPointLights(int count, const float* data8PerLight);
+void gos_GetMissionPointLights(int* count, const float** data8PerLight);
+// macos-port: NIGHT-LIGHT-EPIC — build (if lights changed) + bind the mission
+// light grid SSBOs for the current program: light data on binding 28
+// (vec4 pairs posRad/colClose per light), per-cell index grid on binding 29
+// (8 uints per cell: count + up to 7 light indices; 256wu cells over the
+// playable map). Fills outParams = {originX, originY, 1/cellSize, unused} and
+// outDims = {cellsX, cellsY}; dims 0 = no grid this frame (shader skips).
+// GL calls inside — call from a GL-thread uniform-upload site only.
+void gos_BindMissionLightGrid(float outParams[4], int outDims[2]);
+// macos-port: NIGHT-LIGHT-EPIC dev tuner. With MC2_NIGHT_TUNE=1, re-reads
+// night_tune.txt from the cwd (~2x/sec): four floats "gain gamma floor glow"
+// for the ground-pool term. Gate off / file absent -> defaults (1 1 0.30 0),
+// which reproduce the untuned shader exactly. Lets the pool look be tuned
+// live without a relaunch (shader hot reload doesn't cover these programs).
+void gos_GetMissionLightTune(float out4[4]);
 void gos_SetTerrainDetailParams(float tiling, float strength);
 void gos_SetTerrainMaterialNormal(int index, unsigned int glTexId);
 void gos_SetTerrainWorldScale(float scale);

@@ -1052,6 +1052,10 @@ struct ProgramLocs {
     GLint decalAtlasTLY          = -1;  // u_decalAtlasTLY (float)
     GLint decalAtlasOOW          = -1;  // u_decalAtlasOOW (float)
     GLint terrainDecalColorBlend = -1;  // u_terrainDecalColorBlend (float)
+    // macos-port: NIGHT-LIGHT-EPIC — real eye night state for get_base_light
+    // (lit windows / building night lights) + night dim of the alpha-test floor.
+    GLint missionIsNight         = -1;  // u_missionIsNight (int)
+    GLint missionNightFactor     = -1;  // u_missionNightFactor (float)
 };
 
 // STATICPROP-MATERIAL-ORM-1 — texture unit reserved for the per-bucket ORM
@@ -1383,6 +1387,9 @@ void loadProgramsIfNeeded() {
     s_locsLegacy.pbrV1Strength     = glGetUniformLocation(s_staticPropProgram, "u_pbrV1Strength");
     s_locsLegacy.pbrV1RoughnessOverride = glGetUniformLocation(s_staticPropProgram, "u_pbrV1RoughnessOverride");
     s_locsLegacy.pbrV1DiagSunFound = glGetUniformLocation(s_staticPropProgram, "u_pbrV1DiagSunFound");
+    // macos-port: NIGHT-LIGHT-EPIC — eye night state for get_base_light.
+    s_locsLegacy.missionIsNight     = glGetUniformLocation(s_staticPropProgram, "u_missionIsNight");
+    s_locsLegacy.missionNightFactor = glGetUniformLocation(s_staticPropProgram, "u_missionNightFactor");
     // s_locsLegacy.drawIDBase / texArr stay -1 (coalesce-only; legacy
     // shader has no such uniforms).
 
@@ -1436,6 +1443,9 @@ void loadProgramsIfNeeded() {
             s_locsCoalesce.pbrV1Strength     = glGetUniformLocation(s_staticPropProgramCoalesce, "u_pbrV1Strength");
             s_locsCoalesce.pbrV1RoughnessOverride = glGetUniformLocation(s_staticPropProgramCoalesce, "u_pbrV1RoughnessOverride");
             s_locsCoalesce.pbrV1DiagSunFound = glGetUniformLocation(s_staticPropProgramCoalesce, "u_pbrV1DiagSunFound");
+            // macos-port: NIGHT-LIGHT-EPIC — eye night state for get_base_light.
+            s_locsCoalesce.missionIsNight     = glGetUniformLocation(s_staticPropProgramCoalesce, "u_missionIsNight");
+            s_locsCoalesce.missionNightFactor = glGetUniformLocation(s_staticPropProgramCoalesce, "u_missionNightFactor");
             // STATICPROP-MATERIAL-ORM-1: ORM sampler + sample-enable. The shader
             // does not declare these yet (separate later task) so both resolve to
             // -1 here; the ProgramLocs default-init keeps them -1 and every upload
@@ -6139,13 +6149,27 @@ void GpuStaticPropBatcher::flush(const RenderSnapshot* snap) {
             glUniform1f       (s_locsCoalesce.fogValue,      1.0f);
         if (s_locsCoalesce.debugAddrMode   >= 0)
             glUniform1i       (s_locsCoalesce.debugAddrMode, debugAddrMode_);
+        // macos-port: NIGHT-LIGHT-EPIC — eye night state. The day-sky fills
+        // (hemisphere + IBL SH) fade out with nightFactor; get_base_light gets
+        // the real isNight/nightFactor so windows/night-lights glow at night.
+        float mNightFactor = 0.0f; int mIsNight = 0;
+        {
+            extern void gos_GetMissionLight(float*, float*, float*, int*);
+            gos_GetMissionLight(nullptr, nullptr, &mNightFactor, &mIsNight);
+        }
+        if (s_locsCoalesce.missionIsNight >= 0)
+            glUniform1i       (s_locsCoalesce.missionIsNight, mIsNight);
+        if (s_locsCoalesce.missionNightFactor >= 0)
+            glUniform1f       (s_locsCoalesce.missionNightFactor, mNightFactor);
         // V-AMBIENT-STATIC-1: hemisphere ambient fill strength. Default 0.0
         // (env unset or =0) -> shader hemisphere term contributes vec3(0) ->
         // byte-identical to pre-slice output. =1 -> 1.0 -> visible subtle
         // fill in shadowed faces. Skipped for window-flag nodes inside .vert.
+        // macos-port: NIGHT-LIGHT-EPIC — scaled by (1-nightFactor): day-sky fill.
         if (s_locsCoalesce.ambientV1Strength >= 0)
             glUniform1f       (s_locsCoalesce.ambientV1Strength,
-                               s_staticPropAmbientV1Enabled ? 1.0f : 0.0f);
+                               (s_staticPropAmbientV1Enabled ? 1.0f : 0.0f)
+                                   * (1.0f - mNightFactor));
         // TERRAIN-DECAL-FILL-1: cliff-decal shadow-side ambient floor. Uploaded
         // globally but the frag only applies it to fragments whose instance
         // carries kFlagDecalFill (bit 3) — set solely on MarbleCliff decal
@@ -6212,9 +6236,13 @@ void GpuStaticPropBatcher::flush(const RenderSnapshot* snap) {
         if (s_locsCoalesce.iblSh >= 0)
             glUniform3fv      (s_locsCoalesce.iblSh, 9,
                                &s_currentShSet->coeffs[0][0]);
+        // macos-port: NIGHT-LIGHT-EPIC — the "default" SH set is a bright day
+        // sky; at night it swamped the mission's dim ambient/sun and kept
+        // props noon-bright. Fade it out with nightFactor.
         if (s_locsCoalesce.iblShStrength >= 0)
             glUniform1f       (s_locsCoalesce.iblShStrength,
-                               s_iblShEnabled ? g_iblShStrength : 0.0f);
+                               (s_iblShEnabled ? g_iblShStrength : 0.0f)
+                                   * (1.0f - mNightFactor));
         // V-MATERIAL-PBR-2: per-vertex Schlick-Fresnel specular. Default OFF;
         // strength=0.0 when env unset/=0 -> shader short-circuits (mathematical
         // proof: lit += specular * 0.0 = lit unchanged). Safety interlock:
@@ -7320,11 +7348,23 @@ void GpuStaticPropBatcher::flush(const RenderSnapshot* snap) {
             // available for static props; per-instance fog color is on v_fog.
             // 1.0 == "clear" per shader convention. Revisit for distance fog.
             glUniform1f(glGetUniformLocation(s_staticPropProgram, "u_fogValue"),      1.0f);
+            // macos-port: NIGHT-LIGHT-EPIC — eye night state (legacy program).
+            float mNightFactorL = 0.0f; int mIsNightL = 0;
+            {
+                extern void gos_GetMissionLight(float*, float*, float*, int*);
+                gos_GetMissionLight(nullptr, nullptr, &mNightFactorL, &mIsNightL);
+            }
+            if (s_locsLegacy.missionIsNight >= 0)
+                glUniform1i(s_locsLegacy.missionIsNight, mIsNightL);
+            if (s_locsLegacy.missionNightFactor >= 0)
+                glUniform1f(s_locsLegacy.missionNightFactor, mNightFactorL);
             // V-AMBIENT-STATIC-1: hemisphere ambient strength (legacy program).
             // Same semantics as coalesce site: 0.0 default -> byte-identical OFF.
+            // macos-port: NIGHT-LIGHT-EPIC — day-sky fill fades with nightFactor.
             if (s_locsLegacy.ambientV1Strength >= 0)
                 glUniform1f(s_locsLegacy.ambientV1Strength,
-                            s_staticPropAmbientV1Enabled ? 1.0f : 0.0f);
+                            (s_staticPropAmbientV1Enabled ? 1.0f : 0.0f)
+                                * (1.0f - mNightFactorL));
             // TERRAIN-DECAL-FILL-1: cliff-decal shadow-side ambient floor (legacy
             // program). Frag applies it only to kFlagDecalFill (bit 3) fragments.
             if (s_locsLegacy.terrainDecalFill >= 0)
@@ -7379,9 +7419,11 @@ void GpuStaticPropBatcher::flush(const RenderSnapshot* snap) {
             if (s_locsLegacy.iblSh >= 0)
                 glUniform3fv(s_locsLegacy.iblSh, 9,
                              &s_currentShSet->coeffs[0][0]);
+            // macos-port: NIGHT-LIGHT-EPIC — day-sky SH fades with nightFactor.
             if (s_locsLegacy.iblShStrength >= 0)
                 glUniform1f(s_locsLegacy.iblShStrength,
-                            s_iblShEnabled ? g_iblShStrength : 0.0f);
+                            (s_iblShEnabled ? g_iblShStrength : 0.0f)
+                                * (1.0f - mNightFactorL));
             // V-MATERIAL-PBR-2: legacy program upload. Same gating as coalesce
             // site (env + ViewUniforms-disabled interlock). Default-OFF is
             // upload 0.0f -> shader short-circuit.

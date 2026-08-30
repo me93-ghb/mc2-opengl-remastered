@@ -62,6 +62,35 @@ uniform sampler2D      u_gravelAlbedo;   // dirt-road material (v_matId == 2)
 uniform sampler2DArray matNormalArray;
 uniform PREC float     u_asphaltScale;
 
+// macos-port: NIGHT-LIGHT-EPIC — mission light set (fit-loaded ambient + sun
+// colour, 0..1) and pitch-derived night factor. These tiles are authored
+// day-bright textures with no colormap burn-in, so at night they glowed at
+// noon brightness. nightFactor==0 (every day mission) short-circuits the
+// whole term -> byte-identical day output.
+uniform PREC vec3  u_missionAmbient;
+uniform PREC vec3  u_missionSun;
+uniform PREC float u_missionNightFactor;
+// macos-port: NIGHT-LIGHT-EPIC — world light pools via the shared light grid
+// (see terrain_lod_chunk.frag for layout/semantics).
+layout(binding = 28, std430) readonly buffer MissionLightData {
+    vec4 mlData[];             // pairs per light: [posRad, colClose]
+};
+layout(binding = 29, std430) readonly buffer MissionLightGrid {
+    uint mlGrid[];             // 16 uints per cell: count + up to 15 indices
+};
+uniform vec4  u_mlGridParams;  // originX, originY, 1/cellSize, unused
+uniform ivec2 u_mlGridDims;    // cellsX, cellsY (0 = no grid this frame)
+uniform vec4 u_mlTune;         // tuner: x=gain y=gamma z=(unused here) w=glow
+
+// Retail-style mission light for a surface of normal N: ambient + sun*NdotL,
+// faded in by nightFactor so dusk missions (0<nf<1) interpolate.
+vec3 missionLightTint(vec3 N) {
+    if (u_missionNightFactor <= 0.0) return vec3(1.0);
+    float ndl = max(dot(N, normalize(terrainLightDir.xyz)), 0.0);
+    vec3 ml = clamp(u_missionAmbient + u_missionSun * ndl, 0.0, 1.0);
+    return mix(vec3(1.0), ml, u_missionNightFactor);
+}
+
 void main()
 {
     // MC2_SHADER_PATH_TINT: solid BLUE so this shader's surfaces are unmistakable.
@@ -115,6 +144,11 @@ void main()
         asphaltN = normalize(
             texture(matNormalArray, vec3(guv, float(MAT_LAYER_ASPHALT))).rgb * 2.0 - 1.0);
     }
+
+    // macos-port: NIGHT-LIGHT-EPIC — night-dim the composed tile colour.
+    // Flat-up normal: pads/roads are flat man-made ground surfaces.
+    PREC vec3 missionTint = missionLightTint(vec3(0.0, 0.0, 1.0));
+    c.rgb *= missionTint;
 
     // Discard transparent pixels — cement transitions are binary-alpha tiles.
     // This keeps depth writes and GBuffer1 writes on the cement-visible region only,
@@ -183,6 +217,37 @@ void main()
 
     c.rgb *= shadow;
 
+    // macos-port: NIGHT-LIGHT-EPIC — world light pools on cement/roads
+    // (flat-up normal; same falloff as terrain_lod_chunk.frag).
+    if (u_mlGridDims.x > 0) {
+        PREC vec3 poolAdd = vec3(0.0);
+        vec2 mlRel = (WorldPos.xy - u_mlGridParams.xy) * u_mlGridParams.z;
+        ivec2 mlCij = ivec2(floor(mlRel));
+        if (mlCij.x >= 0 && mlCij.y >= 0 &&
+            mlCij.x < u_mlGridDims.x && mlCij.y < u_mlGridDims.y) {
+        int mlBase = (mlCij.y * u_mlGridDims.x + mlCij.x) * 16;
+        uint mlCnt = min(mlGrid[mlBase], 15u);
+        for (uint mk = 0u; mk < mlCnt; ++mk) {
+            uint mli = mlGrid[mlBase + 1 + int(mk)];
+            PREC vec4 mlPosRad   = mlData[mli * 2u];
+            PREC vec4 mlColClose = mlData[mli * 2u + 1u];
+            PREC vec3 dl = mlPosRad.xyz - WorldPos;
+            // Ground-plane falloff — matches terrain_lod_chunk.frag (mounting
+            // height must not shrink the pool).
+            PREC float dist2d = length(dl.xy);
+            PREC float farD = mlPosRad.w;
+            if (dist2d >= farD) continue;
+            PREC float closeD = mlColClose.w;
+            PREC float fall = clamp((farD - dist2d) / max(farD - closeD, 1e-3), 0.0, 1.0);
+            fall = pow(fall, max(u_mlTune.y, 0.05));   // tuner: falloff shape
+            // NO NdotL — retail pure distance falloff (see terrain_lod_chunk.frag).
+            poolAdd += mlColClose.rgb * fall;
+        }
+        }
+        // Modulate by the raw tile albedo (retail: albedo * (ambient+sun+pools)).
+        c.rgb += mix(tex_color.rgb * poolAdd, poolAdd, clamp(u_mlTune.w, 0.0, 1.0)) * u_mlTune.x;
+    }
+
     // TERRAIN-DECAL-LIGHTING-1a: V1 hemisphere additive (+ V2 shadow-aware
     // floor). Same expression as gos_terrain.frag:780-846 but with
     // snowWeight=0 inline (cement doesn't snow). Default-OFF byte-equivalence:
@@ -215,7 +280,10 @@ void main()
         PREC vec3  hemiFill  = mix(hemiGroundTint, hemiSkyTint, skyFactor);
         PREC float hemiAmount = terrainLightingV1Strength;  // no snowWeight on cement
         PREC float hemiShadowMix = mix(terrainLightingV2ShadowFillFloor, 1.0, shadow);
-        c.rgb += hemiFill * hemiAmount * 0.25 * hemiShadowMix;
+        // macos-port: NIGHT-LIGHT-EPIC — the hemisphere fill is a day-sky
+        // bounce term; scale it by the mission tint so it doesn't wash
+        // night surfaces back toward daylight.
+        c.rgb += hemiFill * hemiAmount * 0.25 * hemiShadowMix * missionTint;
     }
 
     PREC float camDist2D = distance(WorldPos.xy, cameraPos.xy);
@@ -231,7 +299,9 @@ void main()
 #endif
         return;
     }
-    PREC vec3 fogCol = vec3(0.58, 0.65, 0.75);
+    // macos-port: NIGHT-LIGHT-EPIC — night-dim the daylight haze colour too,
+    // else distant roads pick up a bright blue wash on night missions.
+    PREC vec3 fogCol = vec3(0.58, 0.65, 0.75) * missionTint;
     c.rgb = mix(c.rgb, fogCol, fogAmount);
 
     // Map-edge haze: same ramp as gos_terrain.frag. Alpha cement overlay tiles
@@ -239,7 +309,7 @@ void main()
     // magenta "no-data" colormap pixels. Fade them to sky across the last
     // ~one-tile band so they match the main terrain's edge behaviour.
     if (mapHalfExtent > 0.0) {
-        PREC vec3 edgeSkyCol = vec3(0.58, 0.65, 0.75);
+        PREC vec3 edgeSkyCol = vec3(0.58, 0.65, 0.75) * missionTint;  // macos-port: NIGHT-LIGHT-EPIC
         PREC float chebDist  = max(abs(WorldPos.x), abs(WorldPos.y));
         PREC float edgeStart = mapHalfExtent - 256.0;
         PREC float edgeEnd   = mapHalfExtent - 32.0;

@@ -28,6 +28,34 @@ uniform float      u_cementWUPT;   // world units per cement tile (= 128)
 // When non-zero, a non-cement tile fills its corner quadrant toward any diagonally
 // adjacent SOLID cement tile (hard quadrant cut, no feather).
 uniform int        u_cementDiagConnect;
+// macos-port: NIGHT-LIGHT-EPIC — mission light set (fit-loaded ambient + sun
+// colour, 0..1) and pitch-derived night factor. The colormap base has the
+// mission's lighting burned in, but the cement atlas / overlay sidecar are
+// authored day-bright textures — at night they glowed at noon brightness.
+// nightFactor==0 (every day mission) -> tint == 1.0 -> byte-identical day.
+// (Same helper as terrain_overlay.frag — keep in sync.)
+uniform vec3  u_missionAmbient;
+uniform vec3  u_missionSun;
+uniform float u_missionNightFactor;
+// macos-port: NIGHT-LIGHT-EPIC — active world point/spot/terrain lights
+// (spotlight pools, mech search lights, street lamps). Retail burned these
+// into terrain vertex lights; the LOD-chunk path has no vertex lights, so
+// they are consumed here per-fragment via a coarse world-space light grid
+// (256wu cells, up to 7 lights each): EVERY visible lamp lights up while a
+// fragment only walks its own cell. Grid dims 0 (day/menu) skips it all.
+layout(binding = 28, std430) readonly buffer MissionLightData {
+    vec4 mlData[];             // pairs per light: [posRad, colClose]
+};
+layout(binding = 29, std430) readonly buffer MissionLightGrid {
+    uint mlGrid[];             // 16 uints per cell: count + up to 15 indices
+};
+uniform vec4  u_mlGridParams;  // originX, originY, 1/cellSize, unused
+uniform ivec2 u_mlGridDims;    // cellsX, cellsY (0 = no grid this frame)
+// Pool-look tuner (MC2_NIGHT_TUNE + night_tune.txt): x=gain, y=falloff gamma
+// (>1 = tighter/softer-edged pool), z=albedo floor, w=glow (0 = albedo-
+// modulated only, 1 = raw additive light colour). Defaults (1,1,0.30,0)
+// reproduce the untuned math.
+uniform vec4 u_mlTune;
 // Stage B: transition mask array (14 layers R8, unit 11).
 uniform sampler2DArray u_transitionMaskArray;
 uniform int            u_useTransitionMask;
@@ -719,6 +747,16 @@ void main() {
               + texture(u_colormap, uv + vec2(-CMAP_R2, -CMAP_R2)).rgb;
     base /= 9.0;
 
+    // macos-port: NIGHT-LIGHT-EPIC — mission-light tint for burn-in-free
+    // surfaces below (cement atlas, overlay sidecar). Flat-up normal: these
+    // are flat man-made slabs. mix by nightFactor so day is exactly 1.0.
+    vec3 missionTint = vec3(1.0);
+    if (u_missionNightFactor > 0.0) {
+        float mndl = max(dot(vec3(0.0, 0.0, 1.0), normalize(terrainLightDir.xyz)), 0.0);
+        vec3 ml = clamp(u_missionAmbient + u_missionSun * mndl, 0.0, 1.0);
+        missionTint = mix(vec3(1.0), ml, u_missionNightFactor);
+    }
+
     // Step 5c: cement catalog override.
     // cw bit layout: bit31=VALID, bit30=IS_TRANSITION, bits29:24=maskId, bits15:0=layerIdx.
     bool cementHit = false;
@@ -735,7 +773,7 @@ void main() {
         int  cRow = int(cLayerIdx) / cGridSide;
         vec2 cTileUV  = fract(vec2(v_worldPos.x, -v_worldPos.y) / u_cementWUPT);
         vec2 cAtlasUV = (vec2(float(cCol), float(cRow)) + cTileUV) / float(cGridSide);
-        vec3 cementColor = texture(u_cementAtlas, cAtlasUV).rgb;
+        vec3 cementColor = texture(u_cementAtlas, cAtlasUV).rgb * missionTint;  // macos-port: NIGHT-LIGHT-EPIC
         if (isTransition) {
             // CEMENT-HARD-EDGE-1 (default-on; self-disables if u_useTransitionMask==0):
             // Render the SAME solid cement atlas tile as the interior, cut by a HARD
@@ -855,7 +893,7 @@ void main() {
                 int  dRow = int(dLayerIdx) / dGridSide;
                 // Use this tile's own sub-tile UV so the fill aligns with the grid.
                 vec2 dAtlasUV = (vec2(float(dCol), float(dRow)) + dTileUV) / float(dGridSide);
-                base = texture(u_cementAtlas, dAtlasUV).rgb;
+                base = texture(u_cementAtlas, dAtlasUV).rgb * missionTint;  // macos-port: NIGHT-LIGHT-EPIC
                 cementHit = true;
             }
         }
@@ -881,7 +919,8 @@ void main() {
         ovUV.y = (u_overlayBounds.y - v_worldPos.y) / max(u_overlayBounds.w, 1e-5);
         if (ovUV.x >= 0.0 && ovUV.x <= 1.0 && ovUV.y >= 0.0 && ovUV.y <= 1.0) {
             vec4 ov = texture(u_overlaySidecar, ovUV);
-            base = mix(base, ov.rgb, ov.a);
+            // macos-port: NIGHT-LIGHT-EPIC — authored overlay is day-bright art.
+            base = mix(base, ov.rgb * missionTint, ov.a);
             overlayCoverage = ov.a;
             if (ov.a > 0.5) cementHit = true;
         }
@@ -1454,6 +1493,50 @@ void main() {
         float hemiShadowMix = mix(terrainLightingV2ShadowFillFloor, 1.0, shadow);
         hemiContrib = hemiFill * hemiAmount * 0.25 * hemiShadowMix;
         lit += hemiContrib;
+    }
+
+    // macos-port: NIGHT-LIGHT-EPIC — world light pools (retail TG_Light
+    // falloff: constant inside closeDistance, linear to zero at farDistance,
+    // modulated by the surface albedo like retail vertex lighting).
+    if (u_mlGridDims.x > 0) {
+        vec3 poolAdd = vec3(0.0);
+        vec2 mlRel = (v_worldPos.xy - u_mlGridParams.xy) * u_mlGridParams.z;
+        ivec2 mlCij = ivec2(floor(mlRel));
+        if (mlCij.x >= 0 && mlCij.y >= 0 &&
+            mlCij.x < u_mlGridDims.x && mlCij.y < u_mlGridDims.y) {
+        int mlBase = (mlCij.y * u_mlGridDims.x + mlCij.x) * 16;
+        uint mlCnt = min(mlGrid[mlBase], 15u);
+        for (uint mk = 0u; mk < mlCnt; ++mk) {
+            uint mli = mlGrid[mlBase + 1 + int(mk)];
+            vec4 mlPosRad   = mlData[mli * 2u];
+            vec4 mlColClose = mlData[mli * 2u + 1u];
+            vec3 dl = mlPosRad.xyz - v_worldPos;
+            // Falloff over GROUND-PLANE distance: spotlight/lamp heads sit
+            // high on towers, and 3D distance from the head burns most of
+            // the authored falloff on the vertical drop. Horizontal distance
+            // makes the pool independent of mounting height.
+            float dist2d = length(dl.xy);
+            float farD = mlPosRad.w;
+            if (dist2d >= farD) continue;
+            float closeD = mlColClose.w;
+            float fall = clamp((farD - dist2d) / max(farD - closeD, 1e-3), 0.0, 1.0);
+            fall = pow(fall, max(u_mlTune.y, 0.05));   // tuner: falloff shape
+            // NO NdotL: retail terrainLightCalc applied pure distance falloff.
+            // Ground-level lamp lights (position at the pole base) have dl.z~0
+            // for every ground fragment, so a cosine term erased the whole
+            // authored 250wu pool (user-verified against retail video).
+            poolAdd += mlColClose.rgb * fall;
+        }
+        }
+        // The colormap has the mission's (night) lighting burned in, so
+        // modulating the pool by `baseColor` double-dims it (user: "very very
+        // faint"). Approximate the DAY albedo by undoing the mission dim
+        // (missionTint), then light that — matches retail, where vertex
+        // lights modulated the day-bright tile texture. Albedo floor so a
+        // pool still reads on near-black ground.
+        vec3 poolAlbedo = max(baseColor / max(missionTint, vec3(0.08)), vec3(u_mlTune.z));
+        vec3 poolLit = mix(poolAlbedo * poolAdd, poolAdd, clamp(u_mlTune.w, 0.0, 1.0));
+        lit += poolLit * u_mlTune.x;
     }
 
     // LIGHTING-DEBUG-VIEWS-1A-CHUNK: unified lighting debug channels on the

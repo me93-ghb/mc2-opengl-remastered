@@ -2264,15 +2264,24 @@ long BldgAppearance::render (long depthFixup)
 				// as callerName so [OBJBATCHER v1] event=late_register can
 				// identify which actor class owns the unregistered type.
 				const char* callerName = (appearType ? appearType->name : nullptr);
-				submittedToGpu = GpuStaticPropBatcher::instance().submitMultiShape(
-					bldgShape, GpuStaticPropPopulation::Building, callerName);
+				// macos-port: NIGHT-LIGHT-EPIC — spotlight buildings at night
+				// take the COMPLETE retail CPU path (user decision: revert the
+				// spotlight to the original source version). Skipping the GPU
+				// submit routes this actor to the legacy bldgShape->Render()
+				// fallback below, which draws body + SpotLight_ beam cone with
+				// the original code. update() already ran the full bake for it.
+				const bool spotlightRetailCpu = spotlightConeBakeWanted_();
+				submittedToGpu = spotlightRetailCpu
+					? false
+					: GpuStaticPropBatcher::instance().submitMultiShape(
+						bldgShape, GpuStaticPropPopulation::Building, callerName);
 				if (submittedToGpu) ++s_diag_dyn_submit;
 				// Slice 2 (object-offload) — Stage 2.B: late-registration
 				// recovery flag. When submitMultiShape failed because a leaf
 				// type was unregistered, mark the actor for full-bake on the
 				// NEXT update — defensive hygiene that ensures positions-only
 				// is never run on this actor before its type registers.
-				if (!submittedToGpu &&
+				if (!submittedToGpu && !spotlightRetailCpu &&
 				    GpuStaticPropBatcher::instance().wasLastFailureLateRegistration())
 				{
 					needsFullBakeNextFrame = true;
@@ -2343,6 +2352,15 @@ long BldgAppearance::render (long depthFixup)
 		{
 			submittedToGpu = GpuStaticPropBatcher::instance().submitMultiShape(
 				bldgShape, GpuStaticPropPopulation::Legacy);
+		}
+		// macos-port: NIGHT-LIGHT-EPIC — retail spotlight beam cone. The GPU
+		// submit skips SpotLight_ children (T3.1); feed just the cones back
+		// through the legacy additive MC2_ISSPOTLGT vertex pool. Gated by the
+		// same helper as the full bake in update() (verts stay NULL otherwise,
+		// and TG_Shape::Render self-skips on that).
+		if (submittedToGpu && spotlightConeBakeWanted_())
+		{
+			bldgShape->RenderSpotlightChildren();
 		}
 		if (!submittedToGpu)
 		{
@@ -3368,11 +3386,16 @@ long BldgAppearance::update (bool animate)
 			lightToWorldMatrix.BuildTranslation(childPosP);
 			lightToWorldMatrix.BuildRotation(Stuff::EulerAngles(0.0f, 0.0f, 0.0f));
 			spotlightLights_[k]->SetLightToWorld(&lightToWorldMatrix);
-			// eye->isNight is a bare field at camera.h:272 (C-r3 C2). visible
-			// matches anubis at mech3d.cpp:3353 (C-r1 C5). forceLightsOut
+			// eye->isNight is a bare field at camera.h:272 (C-r3 C2). forceLightsOut
 			// matches the existing per-building pointLight gate at :1933.
+			// macos-port: NIGHT-LIGHT-EPIC — dropped the `visible` term: for
+			// buildings it is the legacy ANGULAR cull result (the ~87%
+			// false-negative gate MACOS-PORT-27 documented), so the light —
+			// and with it the terrain ground pool — flickered with camera
+			// angle/zoom. The mission-light collector distance-sorts and the
+			// object-light gather is slot-capped, so always-on at night is safe.
 			spotlightLights_[k]->active =
-				(eye && eye->isNight && visible && !forceLightsOut);
+				(eye && eye->isNight && !forceLightsOut);
 		}
 	}
 
@@ -3604,7 +3627,19 @@ long BldgAppearance::update (bool animate)
 				// frame pool is allocated per visible instance. submit reads
 				// rec.shapeToWorld (populated by the walk) + the debug-only
 				// zero-padded Colors SSBO. MC2_LEGACY_INSTANCE_POOLS=1 reverts.
-				if (gos_StaticPropLegacyInstancePools())
+				// macos-port: NIGHT-LIGHT-EPIC — a spotlight building at night
+				// needs the FULL bake so its SpotLight_ beam-cone children get
+				// CPU-transformed vertices for RenderSpotlightChildren() (the
+				// GPU submit skips spotlight children; retail drew the cone via
+				// the additive MC2_ISSPOTLGT vertex pool). Distance-gated:
+				// whole-map admission (PORT-27) updates EVERY building, and a
+				// full bake runs per-vertex lighting over every active night
+				// light — unbounded, it was a visible frame-time hit.
+				// ponytail: fixed 3500wu camera radius; beams beyond it wait on
+				// a screen-space test if anyone zooms out that far and cares.
+				if (spotlightConeBakeWanted_())
+					bldgShape->TransformMultiShape (&xlatPosition,&rot);
+				else if (gos_StaticPropLegacyInstancePools())
 					bldgShape->TransformMultiShape_PositionsOnly (&xlatPosition,&rot);
 				else
 					bldgShape->TransformMultiShape_HierarchyOnly (&xlatPosition,&rot);
@@ -3638,7 +3673,11 @@ long BldgAppearance::update (bool animate)
 			// PREVIEW-FIX: force the full bake in the SimpleCamera preview so the
 			// CPU MLR draw has complete listOfVertices (hierarchy-only leaves it stale).
 			const bool buildingPbrCpuRenderActive = appearType && appearType->buildingPbrEnabled;
-			if (!buildingPbrCpuRenderActive &&
+			// macos-port: NIGHT-LIGHT-EPIC — full bake for spotlight buildings
+			// at night (beam-cone vertices; see gpuEligible branch above).
+			const bool spotlightConeBake = spotlightConeBakeWanted_();
+			if (!spotlightConeBake &&
+			    !buildingPbrCpuRenderActive &&
 			    !gos_StaticPropLegacyInstancePools() &&
 			    (g_mechPreviewRenderDepth == 0) &&
 			    GpuStaticPropBatcher::instance().isMultiShapeEligibleForGpuObjects(bldgShape))
@@ -3984,6 +4023,27 @@ namespace {
 		return t->bdAnimData[gestureId] != nullptr;
 	}
 } // anon namespace
+
+// macos-port: NIGHT-LIGHT-EPIC — see bdactor.h. Distance-gated: whole-map
+// admission (PORT-27) updates every building each frame, and a full bake runs
+// per-vertex lighting over every active night light; unbounded that was a
+// visible frame-time hit on the night raid.
+// ponytail: fixed 3500wu camera-target radius; swap for a screen-space test
+// if beams need to survive extreme zoom-out.
+bool BldgAppearance::spotlightConeBakeWanted_ (void) const
+{
+	if (spotlightLights_.empty() || !eye || !eye->isNight || forceLightsOut)
+		return false;
+	// 8000wu: the camera scroll target can sit 4000+wu from towers that are
+	// still well on screen (3500 killed every building cone while mechs, always
+	// near the action, kept theirs — user report). Still bounds the whole-map
+	// bake cost to the playfield neighbourhood.
+	const float kConeBakeRadius = 8000.0f;
+	Stuff::Vector3D camPos = eye->getPosition();
+	float dx = position.x - camPos.x;
+	float dy = position.y - camPos.y;
+	return (dx * dx + dy * dy) <= (kConeBakeRadius * kConeBakeRadius);
+}
 
 bool BldgAppearance::isStaticEligible() const
 {
