@@ -4792,6 +4792,10 @@ void Mission::resetTeamsAndCommanders()
 //----------------------------------------------------------------------------------
 void Mission::destroy (bool initLogistics)
 {
+	// MP-3: drop the network rosters before the objects behind them go away; the
+	// session itself survives into the results screen and a rematch.
+	if (MPlayer)
+		MPlayer->resetForNewGame();
 	// MC2-VERIFY-LIVE-1: [VERIFY] counter line at mission end (soak evidence:
 	// fires=0 expected on stock missions). Silent when MC2_VERIFY_MODE=off.
 	mc2verify::MissionSummary(missionFileName);

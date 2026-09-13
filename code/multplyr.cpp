@@ -216,6 +216,8 @@ namespace {
 	unsigned long s_lastSentStatus[MAX_MULTIPLAYER_MOVERS];
 	unsigned long s_lastSentMove[MAX_MULTIPLAYER_MOVERS];
 	bool s_lastSentValidChunk[MAX_MULTIPLAYER_MOVERS];
+	long s_hitsSent = 0, s_hitsApplied = 0, s_fireChunksSent = 0, s_fireChunksReceived = 0;
+	const float kMpEntryQuad[4] = {0.0f, 180.0f, -90.0f, 90.0f};	// WeaponHitChunk.entryAngle
 	unsigned short s_moverUpdateId = 0;		// host: last sent
 	unsigned short s_lastMoverUpdateId = 0;	// client: last applied
 	bool s_haveMoverUpdate = false;
@@ -508,6 +510,9 @@ long MultiPlayer::update (void) {
 				s_lastMoverUpdate = now;
 				sendMoverUpdate();
 			}
+			sendMoverWeaponFireUpdate();	// each early-returns when there is nothing queued
+			sendMoverCriticalUpdate();
+			sendWeaponHitUpdate();
 		}
 		missionDiagnostics();
 	}
@@ -756,16 +761,46 @@ void MultiPlayer::missionDiagnostics (void) {
 			MoverPtr m = localMovers[i];
 			if (!m || m->isDestroyed()) continue;
 			TacticalOrder tacOrder;
-			tacOrder.init(ORDER_ORIGIN_PLAYER, TACTICAL_ORDER_MOVETO_POINT);
-			tacOrder.setWayPoint(0, enemy->getPosition());
-			tacOrder.moveParams.wayPath.numPoints = 1;
+			tacOrder.init(ORDER_ORIGIN_PLAYER, TACTICAL_ORDER_ATTACK_OBJECT);
+			tacOrder.targetWID = enemy->getWatchID();
+			tacOrder.attackParams.type = ATTACK_TO_DESTROY;
+			tacOrder.attackParams.method = ATTACKMETHOD_RANGED;
+			tacOrder.attackParams.range = FIRERANGE_OPTIMAL;
+			tacOrder.attackParams.pursue = true;
 			tacOrder.moveParams.wayPath.mode[0] = TRAVEL_MODE_FAST;
 			tacOrder.pack(NULL, NULL);
 			sendPlayerOrder(&tacOrder, false, 1, &m);
 		}
-		printf("[MP] scripted move orders sent for %ld movers\n", numLocalMovers);
+		printf("[MP] scripted attack orders sent for %ld movers\n", numLocalMovers);
 		fflush(stdout);
 	}
+}
+
+void MultiPlayer::resetForNewGame (void) {
+	// Mission::destroy calls this: the session lives on for a rematch, the world does not.
+	memset(moverRoster, 0, sizeof(moverRoster));
+	memset(playerMoverRoster, 0, sizeof(playerMoverRoster));
+	memset(localMovers, 0, sizeof(localMovers));
+	memset(turretRoster, 0, sizeof(turretRoster));
+	numMovers = numLocalMovers = numTurrets = 0;
+	numWeaponHitChunks = 0;
+	memset(s_lastSentValidChunk, 0, sizeof(s_lastSentValidChunk));
+	s_haveMoverUpdate = false;
+	startLogistics = startLoading = startMission = setupMission = endMission = false;
+	winningTeam = -1;
+	memset(readyToLoad, 0, sizeof(readyToLoad));
+	memset(mechDataReceived, 0, sizeof(mechDataReceived));
+	memset(missionDataLoaded, 0, sizeof(missionDataLoaded));
+	memset(missionFullySetup, 0, sizeof(missionFullySetup));
+	memset(allUnitsDestroyed, 0, sizeof(allUnitsDestroyed));
+	memset(mechData, 0, sizeof(mechData));
+	for (long i = 0; i < MAX_MC_PLAYERS; i++)
+		playerInfo[i].ready = false;
+	inProgress = false;
+	missionSettings.inProgress = false;
+	if (mode == MULTIPLAYER_MODE_MISSION)
+		mode = MULTIPLAYER_MODE_RESULTS;
+	if (getenv("MC2_LOG")) printf("[MP] rosters reset for results/rematch\n");
 }
 
 void MultiPlayer::logRoster (void) {
@@ -1162,21 +1197,34 @@ long MultiPlayer::grabWorldChunks (unsigned long* packedChunkBuffer) {
 //---------------------------------------------------------------------------
 
 long MultiPlayer::addWeaponHitChunk (WeaponHitChunkPtr chunk) {
-
-	return(0);
+	if (!iAmHost || !chunk)
+		return(0);
+	if (numWeaponHitChunks >= MAX_WEAPONHIT_CHUNKS)
+		return(0);	// drop rather than overflow; the hit still happened on the host
+	weaponHitChunks[numWeaponHitChunks++] = chunk->data;
+	return(numWeaponHitChunks);
 }
 
 //---------------------------------------------------------------------------
 
 long MultiPlayer::addWeaponHitChunk (GameObjectPtr target, WeaponShotInfoPtr shotInfo, bool isRefit) {
-
-	return(0);
+	if (!iAmHost || !target || !shotInfo)
+		return(0);
+	WeaponHitChunk chunk;
+	chunk.init();
+	chunk.build(target, shotInfo, isRefit);
+	chunk.pack();
+	return(addWeaponHitChunk(&chunk));
 }
 
 //---------------------------------------------------------------------------
 
 void MultiPlayer::grabWeaponHitChunks (unsigned long* packedChunkBuffer, long numChunks) {
-
+	long n = (numChunks < numWeaponHitChunks) ? numChunks : numWeaponHitChunks;
+	for (long i = 0; i < n; i++)
+		packedChunkBuffer[i] = weaponHitChunks[i];
+	memmove(weaponHitChunks, weaponHitChunks + n, sizeof(unsigned long) * (numWeaponHitChunks - n));
+	numWeaponHitChunks -= n;
 }
 
 //---------------------------------------------------------------------------
@@ -1329,7 +1377,17 @@ void MultiPlayer::sendStartMission (void) {
 //---------------------------------------------------------------------------
 
 void MultiPlayer::sendEndMission (long result) {
-
+	if (!iAmHost || !inSession)
+		return;
+	MCMSG_EndMission msg;
+	msg.init();
+	for (long i = 0; i < MAX_MC_PLAYERS; i++) {
+		msg.teamScore[i] = (i < MAX_TEAMS) ? teamScore[i] : 0;
+		msg.playerScore[i] = playerInfo[i].score;
+	}
+	msg.result = (int)result;
+	sendMessage(NULL, &msg, sizeof(msg), true /*GUARANTEED*/, false);
+	if (getenv("MC2_LOG")) printf("[MP] end mission sent winningTeam=%ld\n", winningTeam);
 }
 
 //---------------------------------------------------------------------------
@@ -1467,7 +1525,31 @@ void MultiPlayer::sendTurretUpdate (void) {
 //---------------------------------------------------------------------------
 
 void MultiPlayer::sendMoverWeaponFireUpdate (void) {
-
+	if (!iAmHost || !inSession || mode != MULTIPLAYER_MODE_MISSION)
+		return;
+	unsigned char buf[sizeof(MCMSG_MoverWeaponFireUpdate) + MAX_MULTIPLAYER_MOVERS * (2 + MAX_WEAPONFIRE_CHUNKS * sizeof(unsigned long))];
+	MCMSG_MoverWeaponFireUpdate* msg = (MCMSG_MoverWeaponFireUpdate*)buf;
+	msg->init();
+	unsigned char* p = msg->weaponFireData;
+	long count = 0, total = 0;
+	for (long i = 0; i < MAX_MULTIPLAYER_MOVERS; i++) {
+		MoverPtr m = moverRoster[i];
+		if (!m || m->getNumWeaponFireChunks(CHUNK_SEND) <= 0) continue;
+		unsigned long chunks[MAX_WEAPONFIRE_CHUNKS];
+		long n = m->grabWeaponFireChunks(CHUNK_SEND, chunks, MAX_WEAPONFIRE_CHUNKS);
+		if (n <= 0) continue;
+		*p++ = (unsigned char)i;
+		*p++ = (unsigned char)n;
+		memcpy(p, chunks, n * sizeof(unsigned long));
+		p += n * sizeof(unsigned long);
+		count++; total += n;
+	}
+	if (!count)
+		return;
+	msg->numRLEs = (unsigned char)count;
+	sendMessage(NULL, msg, (int)(p - buf), true /*GUARANTEED*/, false);
+	s_fireChunksSent += total;
+	if (getenv("MC2_LOG")) printf("[MP] fire chunks sent=%ld movers=%ld total=%ld\n", total, count, s_fireChunksSent);
 }
 
 //---------------------------------------------------------------------------
@@ -1479,13 +1561,45 @@ void MultiPlayer::sendTurretWeaponFireUpdate (void) {
 //---------------------------------------------------------------------------
 
 void MultiPlayer::sendMoverCriticalUpdate (void) {
-
+	if (!iAmHost || !inSession || mode != MULTIPLAYER_MODE_MISSION)
+		return;
+	unsigned char buf[sizeof(MCMSG_MoverCriticalUpdate) + MAX_MULTIPLAYER_MOVERS * (MAX_CRITICALHIT_CHUNKS + MAX_RADIO_CHUNKS)];
+	MCMSG_MoverCriticalUpdate* msg = (MCMSG_MoverCriticalUpdate*)buf;
+	msg->init();
+	unsigned char* p = msg->chunk;
+	long total = 0;
+	for (long i = 0; i < MAX_MULTIPLAYER_MOVERS; i++) {
+		MoverPtr m = moverRoster[i];
+		if (!m) continue;
+		long nc = m->getNumCriticalHitChunks(CHUNK_SEND);
+		if (nc > 0) { m->grabCriticalHitChunks(CHUNK_SEND, p); m->clearCriticalHitChunks(CHUNK_SEND); p += nc; }
+		long nr = m->getNumRadioChunks(CHUNK_SEND);
+		if (nr > 0) { m->grabRadioChunks(CHUNK_SEND, p); m->clearRadioChunks(CHUNK_SEND); p += nr; }
+		msg->numCritHitChunks[i] = (unsigned char)nc;
+		msg->numRadioChunks[i] = (unsigned char)nr;
+		total += nc + nr;
+	}
+	if (!total)
+		return;
+	sendMessage(NULL, msg, (int)(p - buf), true /*GUARANTEED*/, false);
 }
 
 //---------------------------------------------------------------------------
 
 void MultiPlayer::sendWeaponHitUpdate (void) {
-
+	if (!iAmHost || !inSession)
+		return;
+	while (numWeaponHitChunks > 0) {
+		unsigned char buf[sizeof(MCMSG_WeaponHitUpdate) + 255 * sizeof(unsigned long)];
+		MCMSG_WeaponHitUpdate* msg = (MCMSG_WeaponHitUpdate*)buf;
+		msg->init();
+		long n = (numWeaponHitChunks < 255) ? numWeaponHitChunks : 255;
+		grabWeaponHitChunks(msg->weaponHitChunk, n);
+		msg->numWeaponHits = (unsigned char)n;
+		sendMessage(NULL, msg, (int)(sizeof(MCMSG_WeaponHitUpdate) + n * sizeof(unsigned long)), true /*GUARANTEED*/, false);
+		s_hitsSent += n;
+		if (getenv("MC2_LOG")) printf("[MP] weapon hits sent=%ld total=%ld\n", n, s_hitsSent);
+	}
 }
 
 //---------------------------------------------------------------------------
@@ -1716,7 +1830,29 @@ void MultiPlayer::handleStartMission (NETPLAYER sender) {
 //---------------------------------------------------------------------------
 
 void MultiPlayer::handleEndMission (NETPLAYER sender, MCMSG_EndMission* msg) {
-
+	if (iAmHost || sender != serverPlayer)
+		return;
+	for (long i = 0; i < MAX_MC_PLAYERS; i++) {
+		if (i < MAX_TEAMS) teamScore[i] = msg->teamScore[i];
+		playerInfo[i].score = msg->playerScore[i];
+	}
+	winningTeam = msg->result;
+	for (long i = 0; i < MAX_MC_PLAYERS; i++)
+		if (playerInfo[i].player)
+			playerInfo[i].winner = (winningTeam >= 0 && playerInfo[i].team == winningTeam);
+	// Mirror the host's verdict on our copy of the rosters so the results screen agrees.
+	for (long cid = 0; cid < MAX_MC_PLAYERS; cid++) {
+		if (!playerInfo[cid].player) continue;
+		long alive = 0, total = 0;
+		for (long i = 0; i < MAX_LOCAL_MOVERS; i++) {
+			MoverPtr m = playerMoverRoster[cid][i];
+			if (!m) continue;
+			total++;
+			if (!m->isDestroyed() && !m->isDisabled()) alive++;
+		}
+		allUnitsDestroyed[cid] = (total > 0 && alive == 0);
+	}
+	endMission = true;
 }
 
 //---------------------------------------------------------------------------
@@ -1771,6 +1907,8 @@ void MultiPlayer::handlePlayerOrder (NETPLAYER sender, MCMSG_PlayerOrder* msg) {
 	long cid = findPlayer(sender);
 	if (cid < 0 || cid != msg->commanderID)
 		return;
+	if (mode != MULTIPLAYER_MODE_MISSION || !mission || !ObjectManager)
+		return;	// late packet after Mission::destroy (resetForNewGame drops the rosters)
 	TacticalOrder tacOrder;
 	tacOrder.data[0] = msg->tacOrderChunk[0];
 	tacOrder.data[1] = msg->tacOrderChunk[1];
@@ -1807,6 +1945,8 @@ void MultiPlayer::handleMoverUpdate (NETPLAYER sender, MCMSG_MoverUpdate* msg) {
 	if (iAmHost || sender != serverPlayer)
 		return;
 	// Drop stale/duplicate updates (unreliable channel); ids wrap at 16 bits.
+	if (mode != MULTIPLAYER_MODE_MISSION || !mission || !ObjectManager)
+		return;	// late packet after Mission::destroy (resetForNewGame drops the rosters)
 	if (s_haveMoverUpdate && (short)(msg->updateId - s_lastMoverUpdateId) <= 0)
 		return;
 	long age = s_haveMoverUpdate ? (short)(msg->updateId - s_lastMoverUpdateId) : 1;
@@ -1840,7 +1980,25 @@ void MultiPlayer::handleTurretUpdate (NETPLAYER sender, MCMSG_TurretUpdate* msg)
 //---------------------------------------------------------------------------
 
 void MultiPlayer::handleMoverWeaponFireUpdate (NETPLAYER sender, MCMSG_MoverWeaponFireUpdate* msg) {
-
+	if (iAmHost || sender != serverPlayer)
+		return;
+	const unsigned char* p = msg->weaponFireData;
+	if (mode != MULTIPLAYER_MODE_MISSION || !mission || !ObjectManager)
+		return;	// late packet after Mission::destroy (resetForNewGame drops the rosters)
+	for (long k = 0; k < msg->numRLEs; k++) {
+		long idx = *p++;
+		long n = *p++;
+		unsigned long chunks[MAX_WEAPONFIRE_CHUNKS];
+		if (n > MAX_WEAPONFIRE_CHUNKS) return;	// malformed
+		memcpy(chunks, p, n * sizeof(unsigned long));
+		p += n * sizeof(unsigned long);
+		MoverPtr m = (idx < MAX_MULTIPLAYER_MOVERS) ? moverRoster[idx] : NULL;
+		if (!m) continue;
+		if (m->getNumWeaponFireChunks(CHUNK_RECEIVE) + n >= MAX_WEAPONFIRE_CHUNKS)
+			m->clearWeaponFireChunks(CHUNK_RECEIVE);	// never trip the Fatal in addWeaponFireChunks
+		m->addWeaponFireChunks(CHUNK_RECEIVE, chunks, n);
+		s_fireChunksReceived += n;
+	}
 }
 
 //---------------------------------------------------------------------------
@@ -1852,7 +2010,22 @@ void MultiPlayer::handleTurretWeaponFireUpdate (NETPLAYER sender, MCMSG_TurretWe
 //---------------------------------------------------------------------------
 
 void MultiPlayer::handleMoverCriticalUpdate (NETPLAYER sender, MCMSG_MoverCriticalUpdate* msg) {
-
+	if (iAmHost || sender != serverPlayer)
+		return;
+	unsigned char* p = msg->chunk;
+	if (mode != MULTIPLAYER_MODE_MISSION || !mission || !ObjectManager)
+		return;	// late packet after Mission::destroy (resetForNewGame drops the rosters)
+	for (long i = 0; i < MAX_MULTIPLAYER_MOVERS; i++) {
+		long nc = msg->numCritHitChunks[i], nr = msg->numRadioChunks[i];
+		MoverPtr m = moverRoster[i];
+		if (m) {
+			if (nc > 0 && m->getNumCriticalHitChunks(CHUNK_RECEIVE) + nc < MAX_CRITICALHIT_CHUNKS)
+				m->addCriticalHitChunks(CHUNK_RECEIVE, p, nc);
+			if (nr > 0)
+				m->addRadioChunks(CHUNK_RECEIVE, p + nc, nr);
+		}
+		p += nc + nr;
+	}
 }
 
 //---------------------------------------------------------------------------
@@ -1860,7 +2033,41 @@ void MultiPlayer::handleMoverCriticalUpdate (NETPLAYER sender, MCMSG_MoverCritic
 extern bool FromMP;
 
 void MultiPlayer::handleWeaponHitUpdate (NETPLAYER sender, MCMSG_WeaponHitUpdate* msg) {
-
+	if (iAmHost || sender != serverPlayer)
+		return;
+	long applied = 0;
+	if (mode != MULTIPLAYER_MODE_MISSION || !mission || !ObjectManager)
+		return;	// late packet after Mission::destroy (resetForNewGame drops the rosters)
+	for (long i = 0; i < msg->numWeaponHits; i++) {
+		WeaponHitChunk chunk;
+		chunk.init();
+		chunk.data = msg->weaponHitChunk[i];
+		chunk.unpack();
+		if (!chunk.valid(1))
+			continue;
+		if (chunk.refit)
+			continue;	// ponytail: repair-truck refits not relayed yet (Elimination v1)
+		GameObjectPtr target = NULL;
+		switch (chunk.targetType) {
+			case WEAPONHITCHUNK_TARGET_MOVER:
+				target = (chunk.targetId >= 0 && chunk.targetId < MAX_MULTIPLAYER_MOVERS) ? (GameObjectPtr)moverRoster[chunk.targetId] : NULL;
+				break;
+			case WEAPONHITCHUNK_TARGET_TERRAIN:
+			case WEAPONHITCHUNK_TARGET_SPECIAL:
+				target = ObjectManager->findByPartId(chunk.targetId);
+				break;
+			default:
+				break;
+		}
+		if (!target)
+			continue;
+		WeaponShotInfo shotInfo;
+		shotInfo.init(0, chunk.cause, chunk.damage, chunk.hitLocation, kMpEntryQuad[chunk.entryAngle & 3]);
+		target->handleWeaponHit(&shotInfo, false);
+		applied++;
+	}
+	s_hitsApplied += applied;
+	if (getenv("MC2_LOG")) printf("[MP] weapon hits applied=%ld total=%ld\n", applied, s_hitsApplied);
 }
 
 //---------------------------------------------------------------------------
@@ -1954,6 +2161,25 @@ void MultiPlayer::processMessages (void) {
 						handleMoverUpdate(m.sender, mu);
 				}
 				break;
+			case MCMSG_MOVER_WEAPONFIRE_UPDATE:
+				if (m.bytes.size() >= sizeof(MCMSG_MoverWeaponFireUpdate))
+					handleMoverWeaponFireUpdate(m.sender, (MCMSG_MoverWeaponFireUpdate*)raw);
+				break;
+			case MCMSG_MOVER_CRITICAL_UPDATE:
+				if (m.bytes.size() >= sizeof(MCMSG_MoverCriticalUpdate))
+					handleMoverCriticalUpdate(m.sender, (MCMSG_MoverCriticalUpdate*)raw);
+				break;
+			case MCMSG_WEAPONHIT_UPDATE:
+				if (m.bytes.size() >= sizeof(MCMSG_WeaponHitUpdate)) {
+					MCMSG_WeaponHitUpdate* wh = (MCMSG_WeaponHitUpdate*)raw;
+					if (m.bytes.size() >= sizeof(MCMSG_WeaponHitUpdate) + wh->numWeaponHits * sizeof(unsigned long))
+						handleWeaponHitUpdate(m.sender, wh);
+				}
+				break;
+			case MCMSG_END_MISSION:
+				if (m.bytes.size() >= sizeof(MCMSG_EndMission))
+					handleEndMission(m.sender, (MCMSG_EndMission*)raw);
+				break;
 			case MCMSG_PLAYER_ORDER:
 				if (m.bytes.size() >= sizeof(MCMSG_PlayerOrder))
 					handlePlayerOrder(m.sender, (MCMSG_PlayerOrder*)raw);
@@ -1989,11 +2215,18 @@ long MultiPlayer::updateClients (bool forceIt) {
 //---------------------------------------------------------------------------
 
 bool MultiPlayer::calcMissionStatus (void) {
-	// Elimination (v1, computed on each side; host broadcast of EndMission is MP-3).
+	// Elimination. The host decides; clients end when MCMSG_EndMission arrives.
 	// A commander is out when every mover in its roster is destroyed or disabled;
 	// a team is alive while any of its commanders still has a unit.
 	if (!inSession || mode != MULTIPLAYER_MODE_MISSION || !mission)
 		return(false);
+	if (!iAmHost) {
+		if (!endMission)
+			return(false);
+		if (getenv("MC2_LOG"))
+			printf("[MP] mission over: winningTeam=%ld timeUp=0 t=%.1f (from host)\n", winningTeam, mission->actualTime);
+		return(true);
+	}
 	bool teamAlive[MAX_TEAMS];
 	memset(teamAlive, 0, sizeof(teamAlive));
 	long teamsInPlay = 0;
@@ -2031,6 +2264,10 @@ bool MultiPlayer::calcMissionStatus (void) {
 			playerInfo[cid].winner = (winningTeam >= 0 && playerInfo[cid].team == winningTeam);
 	if (getenv("MC2_LOG"))
 		printf("[MP] mission over: winningTeam=%ld timeUp=%d t=%.1f\n", winningTeam, timeUp ? 1 : 0, mission->actualTime);
+	if (!endMission) {
+		endMission = true;
+		sendEndMission(winningTeam);
+	}
 	return(true);
 }
 
@@ -2151,6 +2388,8 @@ void MultiPlayer::initStartupParameters (bool fresh) {
 	memset(turretRoster, 0, sizeof(turretRoster));
 	memset(mechData, 0, sizeof(mechData));
 	numMovers = numLocalMovers = numTurrets = 0;
+	numWeaponHitChunks = 0;
+	s_hitsSent = s_hitsApplied = s_fireChunksSent = s_fireChunksReceived = 0;
 	memset(s_lastSentValidChunk, 0, sizeof(s_lastSentValidChunk));
 	s_moverUpdateId = 0; s_lastMoverUpdateId = 0; s_haveMoverUpdate = false;
 	mode = MULTIPLAYER_MODE_NONE;

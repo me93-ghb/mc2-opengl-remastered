@@ -1,7 +1,8 @@
 # Multiplayer on ENet: spec
 
 Written 2026-09-13 from the /spec interrogation; decisions recorded inline.
-Status: MP-1 and MP-2 done 2026-09-13 (headless runner passes lobby + launch: both instances load WetWork with identical roster hash and seed and stay in mission); MP-4 runner covers lobby and launch; MP-3 in-mission sync next.
+Status 2026-09-13: MP-1, MP-2 and the core of MP-3 are done. The headless runner plays a full Elimination match on WetWork: client orders reach the host, mover updates replay on the client (final cells agree 23-24 of 24 within 3), weapon fire and hits relay, the host's end-of-mission verdict is broadcast and both sides agree on the winner, rosters reset at teardown for a rematch.
+Open in MP-3: world updates (captures, mines, artillery, fires), hold-position / mover-group / artillery / reinforcement orders, turret updates, refit hits. Known: pilots do not engage on their own in multiplayer (no fire without an explicit attack order); the harness uses attack orders, cause not yet investigated.
 
 ## Context
 

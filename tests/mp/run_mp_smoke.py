@@ -43,7 +43,7 @@ def main():
     ap.add_argument("--timeout", type=int, default=90)
     ap.add_argument("--keep-logs", action="store_true")
     ap.add_argument("--no-launch", action="store_true", help="stop after the lobby checks")
-    ap.add_argument("--play", type=int, default=45, help="seconds to keep both in-mission after start")
+    ap.add_argument("--play", type=int, default=150, help="seconds to keep both in-mission after start")
     a = ap.parse_args()
     logdir = os.path.join(REPO, "tests", "mp", "logs"); os.makedirs(logdir, exist_ok=True)
 
@@ -97,10 +97,19 @@ def main():
                 print(f"[mp-smoke] {'PASS' if same else 'FAIL'} roster+seed identical: host={hh.groups() if hh else None} client={ch.groups() if ch else None}", flush=True)
                 ok = bool(same)
             if ok:
-                time.sleep(a.play)
+                # Play until both sides report the match over (Elimination), or --play seconds.
+                t_play = time.time(); over_h = over_c = None
+                while time.time() - t_play < a.play:
+                    over_h = over_h or next((l for l in open(hlog, errors="replace") if "[MP] mission over" in l), None)
+                    over_c = over_c or next((l for l in open(clog, errors="replace") if "[MP] mission over" in l), None)
+                    if (over_h and over_c) or any(p.poll() is not None for p in procs):
+                        break
+                    time.sleep(2)
+                time.sleep(3)
                 alive = all(p.poll() is None for p in procs)
-                print(f"[mp-smoke] {'PASS' if alive else 'FAIL'} both alive after {a.play}s in mission", flush=True)
+                print(f"[mp-smoke] {'PASS' if alive else 'FAIL'} both alive after {time.time()-t_play:.0f}s in mission", flush=True)
                 # MP-3 slice 1: a client order reaches the host and moves that mech on the host
+                deadline = time.time() + 5   # post-play checks read logs already written
                 got = check("host: client order applied", hlog, r"\[MP\] order from commanderID 1: .*applied=[1-9]")
                 moved = False
                 if got:
@@ -133,9 +142,23 @@ def main():
                 print(f"[mp-smoke] {'PASS' if agreed else 'FAIL'} host/client final cells within 3: {agree}/{len(common)} ({pct:.0f}%)", flush=True)
                 checks.append(("client mechs moved", cmoved, "")); checks.append(("cells agree", agreed, f"{pct:.0f}%"))
                 ok = ok and cmoved and agreed
+                # MP-3 slice 3: combat traffic flowed and damage landed on the client
+                fired = any("[MP] fire chunks sent" in l for l in open(hlog, errors="replace"))
+                hitsent = any("[MP] weapon hits sent" in l for l in open(hlog, errors="replace"))
+                hitapplied = [l for l in open(clog, errors="replace") if "[MP] weapon hits applied=" in l and "applied=0" not in l]
+                print(f"[mp-smoke] {'PASS' if fired else 'FAIL'} host: weapon fire relayed", flush=True)
+                print(f"[mp-smoke] {'PASS' if hitsent else 'FAIL'} host: weapon hits sent", flush=True)
+                print(f"[mp-smoke] {'PASS' if hitapplied else 'FAIL'} client: weapon hits applied ({len(hitapplied)} batches)", flush=True)
+                checks += [("fire relayed", fired, ""), ("hits sent", hitsent, ""), ("hits applied", bool(hitapplied), "")]
+                ok = ok and fired and hitsent and bool(hitapplied)
                 ended = [l.strip() for p in (hlog, clog) for l in open(p, errors="replace") if "[MP] mission over" in l]
-                print(f"[mp-smoke] {'FAIL' if ended else 'PASS'} no premature mission end: {ended[:2]}", flush=True)
-                ok = alive and not ended
+                # A mission end is fine (that's a won match) as long as both sides agree on the
+                # winner and it did not happen in the first 20 s.
+                winners = set(re.search(r"winningTeam=(-?\d+)", l).group(1) for l in ended)
+                times = [float(re.search(r" t=([0-9.]+)", l).group(1)) for l in ended]
+                end_ok = (not ended) or (len(ended) == 2 and len(winners) == 1 and min(times) > 20.0)
+                print(f"[mp-smoke] {'PASS' if end_ok else 'FAIL'} mission end consistent: {ended[:2]}", flush=True)
+                ok = ok and alive and end_ok
         unhandled = [l.strip() for p in (hlog, clog) for l in open(p, errors="replace") if "unhandled msg type" in l]
         if unhandled:
             ok = False; print("[mp-smoke] FAIL unhandled messages:", unhandled[:5], flush=True)
