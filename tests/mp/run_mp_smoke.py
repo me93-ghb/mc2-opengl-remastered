@@ -100,7 +100,9 @@ def main():
                 time.sleep(a.play)
                 alive = all(p.poll() is None for p in procs)
                 print(f"[mp-smoke] {'PASS' if alive else 'FAIL'} both alive after {a.play}s in mission", flush=True)
-                ok = alive
+                ended = [l.strip() for p in (hlog, clog) for l in open(p, errors="replace") if "[MP] mission over" in l]
+                print(f"[mp-smoke] {'FAIL' if ended else 'PASS'} no premature mission end: {ended[:2]}", flush=True)
+                ok = alive and not ended
         unhandled = [l.strip() for p in (hlog, clog) for l in open(p, errors="replace") if "unhandled msg type" in l]
         if unhandled:
             ok = False; print("[mp-smoke] FAIL unhandled messages:", unhandled[:5], flush=True)

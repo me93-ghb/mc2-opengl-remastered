@@ -1805,7 +1805,48 @@ long MultiPlayer::updateClients (bool forceIt) {
 //---------------------------------------------------------------------------
 
 bool MultiPlayer::calcMissionStatus (void) {
-
+	// Elimination (v1, computed on each side; host broadcast of EndMission is MP-3).
+	// A commander is out when every mover in its roster is destroyed or disabled;
+	// a team is alive while any of its commanders still has a unit.
+	if (!inSession || mode != MULTIPLAYER_MODE_MISSION || !mission)
+		return(false);
+	bool teamAlive[MAX_TEAMS];
+	memset(teamAlive, 0, sizeof(teamAlive));
+	long teamsInPlay = 0;
+	for (long cid = 0; cid < MAX_MC_PLAYERS; cid++) {
+		if (!playerInfo[cid].player || playerInfo[cid].leftSession)
+			continue;
+		long alive = 0, total = 0;
+		for (long i = 0; i < MAX_LOCAL_MOVERS; i++) {
+			MoverPtr m = playerMoverRoster[cid][i];
+			if (!m) continue;
+			total++;
+			if (!m->isDestroyed() && !m->isDisabled())
+				alive++;
+		}
+		allUnitsDestroyed[cid] = (total > 0 && alive == 0);
+		long team = playerInfo[cid].team;
+		if (team >= 0 && team < MAX_TEAMS && total > 0) {
+			if (!teamAlive[team]) teamsInPlay++;	// counts teams that started with units (dead ones too)
+			if (alive > 0) teamAlive[team] = true;
+		}
+	}
+	long teamsAlive = 0, lastTeam = -1;
+	for (long t = 0; t < MAX_TEAMS; t++)
+		if (teamAlive[t]) { teamsAlive++; lastTeam = t; }
+	bool timeUp = (missionSettings.timeLimit > 0.0f && mission->actualTime >= missionSettings.timeLimit);
+	// ponytail: teamsInPlay counts teams that have units on the roster; a solo host
+	// with nobody else loaded never ends (nothing to eliminate).
+	if (teamsInPlay < 2 && !timeUp)
+		return(false);
+	if (teamsAlive > 1 && !timeUp)
+		return(false);
+	winningTeam = (teamsAlive == 1) ? lastTeam : -1;
+	for (long cid = 0; cid < MAX_MC_PLAYERS; cid++)
+		if (playerInfo[cid].player)
+			playerInfo[cid].winner = (winningTeam >= 0 && playerInfo[cid].team == winningTeam);
+	if (getenv("MC2_LOG"))
+		printf("[MP] mission over: winningTeam=%ld timeUp=%d t=%.1f\n", winningTeam, timeUp ? 1 : 0, mission->actualTime);
 	return(true);
 }
 
