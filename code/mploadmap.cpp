@@ -128,10 +128,11 @@ void MPLoadMap::begin()
 	// fill up the dialog....
 	LogisticsDialog::begin();
 
-	seedDialog( 0 );
-
-
+	// Flag first: seedDialog selects an entry and refreshes the info panel,
+	// which branches on bIsSingle (stock set it after, so the first refresh
+	// used the previous dialog's mode).
 	bIsSingle = false;
+	seedDialog( 0 );
 
 
 }
@@ -141,8 +142,8 @@ void MPLoadMap::beginSingleMission()
 	// fill up the dialog....
 	LogisticsDialog::begin();
 
-	seedDialog( 1 );
 	bIsSingle = true;
+	seedDialog( 1 );
 }
 
 void MPLoadMap::seedDialog( bool bSeedSingle )
@@ -180,6 +181,7 @@ void MPLoadMap::seedDialog( bool bSeedSingle )
 	}
 
 	setDefsElementTextureNode( kMpMapKey, 0 );
+	statics[18].setTexture( (unsigned long)0 ); // legacy tac-map static (Static18)
 	if ( bSeedSingle )
 		mapList.SelectItem( 0);
 	else
@@ -418,7 +420,8 @@ void MPLoadMap::end()
 {
 	LogisticsDialog::end();
 	setDefsElementTextureNode( kMpMapKey, 0 );
-	setDefsElementTextureNode( kMpMapKey, 0 );
+	statics[18].setTexture( (unsigned long)0 );
+	statics[18].setColor( 0 );
 }
 
 void MPLoadMap::render(int, int )
@@ -605,6 +608,10 @@ void MPLoadMap::updateMapInfo()
 
 			long textureHandle = MissionBriefingScreen::getMissionTGA( selMapName, true );
 			setDefsElementTextureNode( kMpMapKey, textureHandle );
+			// Legacy bitmap path too, else the tac-map static stays a white square.
+			statics[18].setTexture( textureHandle );
+			statics[18].setUVs( 0, 127, 127, 0 );
+			statics[18].setColor( 0xffffffff );
  
 			cLoadString( IDS_MP_LM_MAP_LIST_MAP_NAME, text, 255 );
 			sprintf( text2, text, missionName );
@@ -671,6 +678,7 @@ void MPLoadMap::updateMapInfo()
 		textObjects[2].setText( "" );
 		textObjects[5].setText( "" );
 		setDefsElementTextureNode( kMpMapKey, 0 );
+		statics[18].setColor( 0 );
 
 
 	}
