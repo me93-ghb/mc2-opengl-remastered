@@ -43,7 +43,7 @@ def main():
     ap.add_argument("--timeout", type=int, default=90)
     ap.add_argument("--keep-logs", action="store_true")
     ap.add_argument("--no-launch", action="store_true", help="stop after the lobby checks")
-    ap.add_argument("--play", type=int, default=15, help="seconds to keep both in-mission after start")
+    ap.add_argument("--play", type=int, default=45, help="seconds to keep both in-mission after start")
     a = ap.parse_args()
     logdir = os.path.join(REPO, "tests", "mp", "logs"); os.makedirs(logdir, exist_ok=True)
 
@@ -63,7 +63,7 @@ def main():
 
     ok = check("host: hosting", hlog, r"\[MP\] hosting ")
     if ok:
-        client, clog = start("client", {"MC2_MP_AUTOJOIN": f"127.0.0.1:{a.port}"}, logdir)
+        client, clog = start("client", {"MC2_MP_AUTOJOIN": f"127.0.0.1:{a.port}", "MC2_MP_SCRIPT_ORDERS": "1"}, logdir)
         procs.append(client)
         ok = (check("host: peer joined", hlog, r"\[MP\] peer .* joined -> commanderID 1")
               and check("client: assigned cid", clog, r"\[MP\] assigned commanderID 1")
@@ -100,6 +100,39 @@ def main():
                 time.sleep(a.play)
                 alive = all(p.poll() is None for p in procs)
                 print(f"[mp-smoke] {'PASS' if alive else 'FAIL'} both alive after {a.play}s in mission", flush=True)
+                # MP-3 slice 1: a client order reaches the host and moves that mech on the host
+                got = check("host: client order applied", hlog, r"\[MP\] order from commanderID 1: .*applied=[1-9]")
+                moved = False
+                if got:
+                    first, last = {}, {}
+                    for l in open(hlog, errors="replace"):
+                        mm = re.search(r"\[MP_POS\] t=\S+ cid=1 idx=(\d+) r=(\d+) c=(\d+)", l)
+                        if mm:
+                            k = mm.group(1); v = (mm.group(2), mm.group(3))
+                            first.setdefault(k, v); last[k] = v
+                    moved = any(first[k] != last[k] for k in first)
+                    checks.append(("host: client mechs moved", moved, f"tracked={len(first)}"))
+                    print(f"[mp-smoke] {'PASS' if moved else 'FAIL'} host: client mechs moved (tracked={len(first)})", flush=True)
+                ok = ok and got and moved
+                # MP-3 slice 2: the client's own mechs move on the CLIENT, and host/client cells agree
+                def samples(path):
+                    first, last = {}, {}
+                    for l in open(path, errors="replace"):
+                        mm = re.search(r"\[MP_POS\] t=\S+ cid=(\d+) idx=(\d+) r=(\d+) c=(\d+)", l)
+                        if mm:
+                            k = (mm.group(1), mm.group(2)); v = (int(mm.group(3)), int(mm.group(4)))
+                            first.setdefault(k, v); last[k] = v
+                    return first, last
+                hf, hl = samples(hlog); cf, cl = samples(clog)
+                cmoved = any(cf[k] != cl[k] for k in cf if k[0] == "1")
+                print(f"[mp-smoke] {'PASS' if cmoved else 'FAIL'} client: own mechs moved on client (tracked={sum(1 for k in cf if k[0]=='1')})", flush=True)
+                common = [k for k in hl if k in cl]
+                agree = sum(1 for k in common if abs(hl[k][0]-cl[k][0]) <= 3 and abs(hl[k][1]-cl[k][1]) <= 3)
+                pct = (100.0 * agree / len(common)) if common else 0.0
+                agreed = pct >= 75.0
+                print(f"[mp-smoke] {'PASS' if agreed else 'FAIL'} host/client final cells within 3: {agree}/{len(common)} ({pct:.0f}%)", flush=True)
+                checks.append(("client mechs moved", cmoved, "")); checks.append(("cells agree", agreed, f"{pct:.0f}%"))
+                ok = ok and cmoved and agreed
                 ended = [l.strip() for p in (hlog, clog) for l in open(p, errors="replace") if "[MP] mission over" in l]
                 print(f"[mp-smoke] {'FAIL' if ended else 'PASS'} no premature mission end: {ended[:2]}", flush=True)
                 ok = alive and not ended

@@ -32,6 +32,7 @@
 
 #ifndef MISSION_H
 #include"mission.h"
+#include"tacordr.h"
 #endif
 
 #ifndef MECH_H
@@ -204,6 +205,20 @@ namespace {
 		MP_SETUP_GO_LOBBY   = 6,	// Launch pressed: leave the parameter screen for the load screen
 	};
 	const int kMpWaitTimeoutMs = 120000;
+	enum { MP_ORDER_QUEUED = 1, MP_ORDER_NEEDS_SELECTION = 2 };	// MCMSG_PlayerOrder.flags
+	// MCMSG_MoverUpdate.moveData entry: roster index + the mover's packed status and move chunks.
+	#pragma pack(push, 1)
+	struct MpMoverEntry { unsigned char idx; unsigned char flags; unsigned long status; unsigned long move; };
+	#pragma pack(pop)
+	enum { MP_ENTRY_STATUS = 1, MP_ENTRY_MOVE = 2 };
+	const int kMpMoverUpdateMs = 100;		// 10 Hz poll, unreliable; only changed chunks go out
+	const int kMpMoverKeyframeEvery = 10;	// ...plus everything once a second (packet loss)
+	unsigned long s_lastSentStatus[MAX_MULTIPLAYER_MOVERS];
+	unsigned long s_lastSentMove[MAX_MULTIPLAYER_MOVERS];
+	bool s_lastSentValidChunk[MAX_MULTIPLAYER_MOVERS];
+	unsigned short s_moverUpdateId = 0;		// host: last sent
+	unsigned short s_lastMoverUpdateId = 0;	// client: last applied
+	bool s_haveMoverUpdate = false;
 	unsigned short mpPort (void) {
 		const char* e = getenv("MC2_MP_PORT");
 		long v = e ? atol(e) : 0;
@@ -485,6 +500,17 @@ long MultiPlayer::update (void) {
 		hostLeft = true;
 		if (getenv("MC2_LOG")) printf("[MP] host connection lost\n");
 	}
+	if (mode == MULTIPLAYER_MODE_MISSION && mission) {
+		if (iAmHost) {
+			static unsigned long s_lastMoverUpdate = 0;
+			unsigned long now = (unsigned long)timeGetTime();
+			if (now - s_lastMoverUpdate >= (unsigned long)kMpMoverUpdateMs) {
+				s_lastMoverUpdate = now;
+				sendMoverUpdate();
+			}
+		}
+		missionDiagnostics();
+	}
 	return(MPLAYER_NO_ERR);
 }
 
@@ -699,6 +725,48 @@ static bool doneAllLoaded (MultiPlayer* mp)      { return mpAllPeers(mp, mp->mis
 static bool doneAllStarted (MultiPlayer* mp)     { return mpAllPeers(mp, mp->missionFullySetup); }
 static bool doneStartMission (MultiPlayer* mp)   { return mp->startMission; }
 static bool doneSetupMission (MultiPlayer* mp)   { return mp->setupMission; }
+
+// [MP_POS] every 2 s: one line per roster mover, same format both sides, so a runner can
+// compare host and client worlds. MC2_MP_SCRIPT_ORDERS=1 on a client: every 20 s send a
+// move order for each local mover toward the first enemy mover (harness only).
+void MultiPlayer::missionDiagnostics (void) {
+	static unsigned long s_lastPos = 0, s_lastOrder = 0, s_missionT0 = 0;
+	unsigned long now = (unsigned long)timeGetTime();
+	if (!s_missionT0) s_missionT0 = now;
+	const bool logOn = (getenv("MC2_LOG") != NULL);
+	if (logOn && now - s_lastPos >= 2000) {
+		s_lastPos = now;
+		for (long i = 0; i < MAX_MULTIPLAYER_MOVERS; i++) {
+			MoverPtr m = moverRoster[i];
+			if (!m) continue;
+			int r = 0, c = 0;
+			m->getCellPosition(r, c);
+			printf("[MP_POS] t=%.0f cid=%ld idx=%ld r=%d c=%d dead=%d\n", mission->actualTime, m->getCommanderId(), i, r, c, m->isDestroyed() ? 1 : 0);
+		}
+		fflush(stdout);
+	}
+	if (!iAmHost && getenv("MC2_MP_SCRIPT_ORDERS") && now - s_missionT0 > 10000 && now - s_lastOrder >= 20000) {
+		s_lastOrder = now;
+		MoverPtr enemy = NULL;
+		for (long i = 0; i < MAX_MULTIPLAYER_MOVERS && !enemy; i++)
+			if (moverRoster[i] && moverRoster[i]->getCommanderId() != commanderID && !moverRoster[i]->isDestroyed())
+				enemy = moverRoster[i];
+		if (!enemy) return;
+		for (long i = 0; i < numLocalMovers; i++) {
+			MoverPtr m = localMovers[i];
+			if (!m || m->isDestroyed()) continue;
+			TacticalOrder tacOrder;
+			tacOrder.init(ORDER_ORIGIN_PLAYER, TACTICAL_ORDER_MOVETO_POINT);
+			tacOrder.setWayPoint(0, enemy->getPosition());
+			tacOrder.moveParams.wayPath.numPoints = 1;
+			tacOrder.moveParams.wayPath.mode[0] = TRAVEL_MODE_FAST;
+			tacOrder.pack(NULL, NULL);
+			sendPlayerOrder(&tacOrder, false, 1, &m);
+		}
+		printf("[MP] scripted move orders sent for %ld movers\n", numLocalMovers);
+		fflush(stdout);
+	}
+}
 
 void MultiPlayer::logRoster (void) {
 	// One line both sides can be compared on: order-sensitive hash of type + start cell per roster slot.
@@ -1298,7 +1366,35 @@ void MultiPlayer::sendPlayerOrder (TacticalOrderPtr tacOrder,
 								   long numGroups,
 								   MoverGroupPtr* groupList,
    								   bool queuedOrder) {
-
+	if (!tacOrder || !inSession || numMovers <= 0 || !moverList)
+		return;
+	(void)numGroups; (void)groupList;	// ponytail: group orders arrive expanded in moverList by every current caller
+	if (iAmHost) {
+		for (long i = 0; i < numMovers; i++)
+			if (moverList[i])
+				moverList[i]->handleTacticalOrder(*tacOrder, 1, queuedOrder);
+		return;
+	}
+	MCMSG_PlayerOrder msg;
+	msg.init();
+	msg.commanderID = (char)commanderID;
+	msg.flags = (queuedOrder ? MP_ORDER_QUEUED : 0) | (needsSelection ? MP_ORDER_NEEDS_SELECTION : 0);
+	Stuff::Vector3D wp = tacOrder->getWayPoint(0);
+	msg.location[0] = wp.x;
+	msg.location[1] = wp.y;
+	msg.tacOrderChunk[0] = tacOrder->data[0];
+	msg.tacOrderChunk[1] = tacOrder->data[1];
+	for (long i = 0; i < numMovers && msg.numMovers < MAX_LOCAL_MOVERS; i++) {
+		if (!moverList[i]) continue;
+		long idx = moverList[i]->getNetRosterIndex();
+		if (idx < 0 || idx >= MAX_MULTIPLAYER_MOVERS) continue;
+		msg.moverIndex[msg.numMovers++] = (unsigned char)idx;
+	}
+	if (!msg.numMovers)
+		return;
+	sendMessage(NULL, &msg, sizeof(msg), true /*GUARANTEED*/, false);
+	if (getenv("MC2_LOG"))
+		printf("[MP] order sent code=%d movers=%d\n", (int)tacOrder->code, (int)msg.numMovers);
 }
 
 //---------------------------------------------------------------------------
@@ -1326,7 +1422,40 @@ void MultiPlayer::sendPlayerArtillery (long strikeType, Stuff::Vector3D location
 //---------------------------------------------------------------------------
 
 void MultiPlayer::sendMoverUpdate (void) {
-
+	if (!iAmHost || !inSession || mode != MULTIPLAYER_MODE_MISSION)
+		return;
+	unsigned char buf[sizeof(MCMSG_MoverUpdate) + MAX_MULTIPLAYER_MOVERS * sizeof(MpMoverEntry)];
+	MCMSG_MoverUpdate* msg = (MCMSG_MoverUpdate*)buf;
+	msg->init();
+	msg->updateId = ++s_moverUpdateId;
+	const bool keyframe = (s_moverUpdateId % kMpMoverKeyframeEvery) == 0;
+	for (long i = 0; i < MAX_MC_PLAYERS; i++) {
+		msg->teamScore[i] = (i < MAX_TEAMS) ? teamScore[i] : 0;
+		msg->playerScore[i] = playerInfo[i].score;
+	}
+	MpMoverEntry* e = (MpMoverEntry*)msg->moveData;
+	long n = 0;
+	for (long i = 0; i < MAX_MULTIPLAYER_MOVERS; i++) {
+		MoverPtr m = moverRoster[i];
+		if (!m) continue;
+		m->buildStatusChunk();
+		m->buildMoveChunk();
+		unsigned long st = m->statusChunk.data, mv = m->getMoveChunk()->data;
+		unsigned char flags = 0;
+		if (keyframe || !s_lastSentValidChunk[i] || st != s_lastSentStatus[i]) flags |= MP_ENTRY_STATUS;
+		if (keyframe || !s_lastSentValidChunk[i] || mv != s_lastSentMove[i])   flags |= MP_ENTRY_MOVE;
+		s_lastSentStatus[i] = st; s_lastSentMove[i] = mv; s_lastSentValidChunk[i] = true;
+		if (!flags) continue;
+		e[n].idx = (unsigned char)i;
+		e[n].flags = flags;
+		e[n].status = st;
+		e[n].move = mv;
+		n++;
+	}
+	if (!n && !keyframe)
+		return;
+	msg->numRLEs = (unsigned char)n;
+	sendMessage(NULL, msg, (int)(sizeof(MCMSG_MoverUpdate) + n * sizeof(MpMoverEntry)), false /*unreliable*/, false);
 }
 
 //---------------------------------------------------------------------------
@@ -1637,7 +1766,27 @@ void MultiPlayer::handleHoldPosition (NETPLAYER sender, MCMSG_HoldPosition* msg)
 //-----------------------------------------------------------------------------
 
 void MultiPlayer::handlePlayerOrder (NETPLAYER sender, MCMSG_PlayerOrder* msg) {
-
+	if (!iAmHost)
+		return;
+	long cid = findPlayer(sender);
+	if (cid < 0 || cid != msg->commanderID)
+		return;
+	TacticalOrder tacOrder;
+	tacOrder.data[0] = msg->tacOrderChunk[0];
+	tacOrder.data[1] = msg->tacOrderChunk[1];
+	tacOrder.unpack();
+	long applied = 0;
+	for (long i = 0; i < msg->numMovers && i < MAX_LOCAL_MOVERS; i++) {
+		long idx = msg->moverIndex[i];
+		if (idx >= MAX_MULTIPLAYER_MOVERS) continue;
+		MoverPtr mover = moverRoster[idx];
+		if (!mover || mover->getCommanderId() != cid || mover->isDestroyed())
+			continue;	// not theirs (or gone): drop silently
+		mover->handleTacticalOrder(tacOrder, 1, (msg->flags & MP_ORDER_QUEUED) != 0);
+		applied++;
+	}
+	if (getenv("MC2_LOG"))
+		printf("[MP] order from commanderID %ld: code=%d movers=%d applied=%ld\n", cid, (int)tacOrder.code, (int)msg->numMovers, applied);
 }
 
 //---------------------------------------------------------------------------
@@ -1655,7 +1804,31 @@ void MultiPlayer::handlePlayerArtillery (NETPLAYER sender, MCMSG_PlayerArtillery
 //---------------------------------------------------------------------------
 
 void MultiPlayer::handleMoverUpdate (NETPLAYER sender, MCMSG_MoverUpdate* msg) {
-
+	if (iAmHost || sender != serverPlayer)
+		return;
+	// Drop stale/duplicate updates (unreliable channel); ids wrap at 16 bits.
+	if (s_haveMoverUpdate && (short)(msg->updateId - s_lastMoverUpdateId) <= 0)
+		return;
+	long age = s_haveMoverUpdate ? (short)(msg->updateId - s_lastMoverUpdateId) : 1;
+	s_lastMoverUpdateId = msg->updateId;
+	s_haveMoverUpdate = true;
+	for (long i = 0; i < MAX_MC_PLAYERS; i++) {
+		if (i < MAX_TEAMS) teamScore[i] = msg->teamScore[i];
+		playerInfo[i].score = msg->playerScore[i];
+	}
+	const MpMoverEntry* e = (const MpMoverEntry*)msg->moveData;
+	for (long k = 0; k < msg->numRLEs; k++) {
+		long idx = e[k].idx;
+		if (idx >= MAX_MULTIPLAYER_MOVERS) continue;
+		MoverPtr m = moverRoster[idx];
+		if (!m) continue;
+		if (e[k].flags & MP_ENTRY_STATUS)
+			m->handleStatusChunk(age, e[k].status);
+		// Re-applying an identical move chunk rebuilds the path and re-targets the mech
+		// (visible jitter), so keyframes only matter when the chunk actually differs.
+		if ((e[k].flags & MP_ENTRY_MOVE) && e[k].move != m->getMoveChunk()->data)
+			m->handleMoveChunk(e[k].move);
+	}
 }
 
 //---------------------------------------------------------------------------
@@ -1773,6 +1946,17 @@ void MultiPlayer::processMessages (void) {
 			case MCMSG_START_MISSION:
 				if (m.bytes.size() >= sizeof(MCMSG_StartMission))
 					handleStartMission(m.sender);
+				break;
+			case MCMSG_MOVER_UPDATE:
+				if (m.bytes.size() >= sizeof(MCMSG_MoverUpdate)) {
+					MCMSG_MoverUpdate* mu = (MCMSG_MoverUpdate*)raw;
+					if (m.bytes.size() >= sizeof(MCMSG_MoverUpdate) + mu->numRLEs * sizeof(MpMoverEntry))
+						handleMoverUpdate(m.sender, mu);
+				}
+				break;
+			case MCMSG_PLAYER_ORDER:
+				if (m.bytes.size() >= sizeof(MCMSG_PlayerOrder))
+					handlePlayerOrder(m.sender, (MCMSG_PlayerOrder*)raw);
 				break;
 			case MCMSG_LEAVE_SESSION:
 				if (m.bytes.size() >= sizeof(MCMSG_LeaveSession))
@@ -1933,6 +2117,7 @@ void MultiPlayer::initStartupParameters (bool fresh) {
 	missionSettings.allTech = true;
 	missionSettings.variants = true;
 	onLAN = true;		// retail probed for a LAN adapter; ENet works anywhere, so keep the LAN panel enabled
+	warpFactor = 128.0f;	// ~3 cells: clients warp a mech to its chunk cell only beyond this (was never set)
 	iAmHost = false;
 	inSession = false;
 	hostLeft = false;
@@ -1966,6 +2151,8 @@ void MultiPlayer::initStartupParameters (bool fresh) {
 	memset(turretRoster, 0, sizeof(turretRoster));
 	memset(mechData, 0, sizeof(mechData));
 	numMovers = numLocalMovers = numTurrets = 0;
+	memset(s_lastSentValidChunk, 0, sizeof(s_lastSentValidChunk));
+	s_moverUpdateId = 0; s_lastMoverUpdateId = 0; s_haveMoverUpdate = false;
 	mode = MULTIPLAYER_MODE_NONE;
 	s_lastSentValid = false;
 }

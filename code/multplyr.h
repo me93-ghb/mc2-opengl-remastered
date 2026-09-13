@@ -904,6 +904,8 @@ class MCMSG_PlayerOrder {
 		unsigned char	flags;
 		float			location[2];
 		unsigned long	tacOrderChunk[2];
+		unsigned char	numMovers;						// MP-3: which of my movers (netRosterIndex); retail relied on synced selection
+		unsigned char	moverIndex[MAX_LOCAL_MOVERS];
 
 	public:
 
@@ -915,6 +917,7 @@ class MCMSG_PlayerOrder {
 			type = MCMSG_PLAYER_ORDER;
 			commanderID = -1;
 			flags = 0;
+			numMovers = 0;
 			location[0] = 0.0;
 			location[1] = 0.0;
 			tacOrderChunk[0] = 0;
@@ -1566,6 +1569,7 @@ class MultiPlayer {
 		long joinGame (char* ipAddress, char* sessionName, char* playerName);
 
 		void logRoster (void);		// MP-2: '[MP] roster hash=' line for the harness
+		void missionDiagnostics (void);	// MP-3: [MP_POS] samples + scripted harness orders
 		bool waitTillStartLoading (void);
 
 		bool waitTillMechDataReceived (void);
