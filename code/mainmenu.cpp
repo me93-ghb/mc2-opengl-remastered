@@ -455,6 +455,21 @@ void MainMenu::update()
 		}
 	}
 
+	// MC2_MP_AUTOHOST=1 / MC2_MP_AUTOJOIN=host:port: headless harness hooks. Enter the
+	// multiplayer screens the way the Multiplayer button does (no fade); the connection
+	// screen then hosts or joins on its own (mpconnectiontype.cpp). One-shot.
+	{
+		static bool s_mpAutoFired = false;
+		const bool mpAuto = std::getenv("MC2_MP_AUTOHOST") || std::getenv("MC2_MP_AUTOJOIN");
+		if ( !s_mpAutoFired && mpAuto && LogisticsData::instance && !MPlayer )
+		{
+			s_mpAutoFired = true;
+			LogisticsData::instance->startMultiPlayer();
+			status = endResult = MULTIPLAYERRESTART;
+			return;
+		}
+	}
+
 	// MC2_BOOT_TO_SCREEN=encyclopedia: headless boot straight into the
 	// Mechlopedia from the main menu (mirrors MM_MSG_ENCYCLOPEDIA, no fade so
 	// captures start immediately). One-shot; harness-capturable without clicks.
@@ -484,7 +499,9 @@ void MainMenu::update()
 	else
 		getButton( MM_MSG_SAVE )->disable( false );
 
-	getButton( MM_MSG_MULTIPLAYER )->disable( true );
+	// MP-ENET-1: the DirectPlay transport is stubbed in the released source, so the
+	// button stays disabled by default. MC2_MP_ENABLE=1 opens it for the ENet prototype.
+	getButton( MM_MSG_MULTIPLAYER )->disable( std::getenv("MC2_MP_ENABLE") == nullptr );
 
 	// macos-port: MC2_SKIP_INTRO=1 skips only the intro MOVIE (msft), then lets
 	// the splash-screen sequence play normally: the non-looping intro-layout

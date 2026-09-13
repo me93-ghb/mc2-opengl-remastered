@@ -1558,6 +1558,8 @@ const char* MissionBegin::update()
 
 		if ( pCurScreen->getStatus() != LogisticsScreen::RUNNING || soakForceNext )
 		{
+			if ( MPlayer && getenv("MC2_LOG") )
+				printf("[MP] screen [%ld][%ld] status=%ld\n", curScreenX, curScreenY, (long)pCurScreen->getStatus());
 			soundSystem->stopBettySample(); // don't want to carry droning on to next screen
 			soundSystem->stopSupportSample();
 			if ( pCurScreen->getStatus() == LogisticsScreen::NEXT || soakForceNext )

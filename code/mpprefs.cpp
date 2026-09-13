@@ -164,7 +164,7 @@ void MPPrefs::begin()
 
 	WIN32_FIND_DATA	findResult;
 	HANDLE searchHandle = FindFirstFile(findString,&findResult); 
-	do
+	if ( searchHandle != INVALID_HANDLE_VALUE ) do
 	{
 		// 24 or 32 bit files
 		if ((findResult.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 )

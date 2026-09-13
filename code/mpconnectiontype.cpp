@@ -184,6 +184,34 @@ void MPConnectionType::begin()
 	}
 
 	tcpipPanel.begin();
+	if ( getenv("MC2_LOG") && MPlayer )
+		printf("[MP] connection screen begin\n");
+
+	// MC2_MP_AUTOHOST / MC2_MP_AUTOJOIN harness hooks: same calls the Host dialog's
+	// YES and the browser's Join make, then skip to the parameter screen.
+	if ( MPlayer && getenv("MC2_MP_AUTOHOST") )
+	{
+		const char* name = getenv("MC2_MP_SESSION");
+		MPlayer->setMode(MULTIPLAYER_MODE_PARAMETERS);
+		if ( MPlayer->hostSession( (char*)(name && name[0] ? name : "autohost"), &prefs.playerName[0][0], 8 ) )
+		{
+			(*ppConnectionScreen) = pMPPlaceHolderScreen;
+			status = NEXT;
+		}
+		else
+			MPlayer->setMode(MULTIPLAYER_MODE_NONE);
+	}
+	else if ( MPlayer && getenv("MC2_MP_AUTOJOIN") )
+	{
+		long sessionCount = 0;
+		MC2Session* pSessions = MPlayer->getSessions( sessionCount );
+		if ( sessionCount && MPLAYER_NO_ERR == MPlayer->joinSession( &pSessions[0], &prefs.playerName[0][0] ) )
+		{
+			MPlayer->setMode(MULTIPLAYER_MODE_PARAMETERS);
+			(*ppConnectionScreen) = pMPPlaceHolderScreen;
+			status = NEXT;
+		}
+	}
 }
 
 

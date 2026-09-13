@@ -2337,6 +2337,12 @@ void Mission::init (const char *missionName, long loadType, long dropZoneID, Stu
 	// DETERMINISTIC-RNG-1: per-mission reseed hook. ONLY under MC2_DETERMINISTIC_RNG.
 	// Seed = hash(missionName), overridable with MC2_RNG_SEED for manual pinning.
 	// Gate OFF: this block is a no-op (no gos_srand call) => OFF byte-identical.
+	// MP-2: the host picks the seed and ships it in MCMSG_MissionSetup; both sides
+	// reseed here so anything random at load (and later lockstep work) agrees.
+	if (MPlayer && MPlayer->randomSeed) {
+		gos_srand((unsigned int)MPlayer->randomSeed);
+		std::fprintf(stderr, "[MP] reseed=0x%08lX from host\n", (unsigned long)MPlayer->randomSeed);
+	}
 	{
 		const char* detEnv = getenv("MC2_DETERMINISTIC_RNG");
 		const bool detRng = (detEnv && detEnv[0] != '\0' && detEnv[0] != '0');

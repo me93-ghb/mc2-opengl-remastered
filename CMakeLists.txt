@@ -546,6 +546,7 @@ set(SOURCES
     "code/chatwindow.cpp"
     "code/mpstats.cpp"
     "code/multplyr.cpp"
+    "code/mptransport.cpp"   # MP-ENET-1: cross-platform transport behind the DirectPlay seam
     "code/mc2movie.cpp"
     "code/mc2video.cpp"
     )
@@ -871,3 +872,24 @@ if(MC2_BUILD_TESTS)
   add_subdirectory(tests/model_override)
   add_subdirectory(tests/static_natural_skip)
 endif()
+
+# ---------------------------------------------------------------------------
+# MP-ENET-1: vendored ENet (3rdparty/enet, MIT) as the cross-platform UDP
+# transport behind MultiPlayer's stubbed DirectPlay seam. unix.c / win32.c
+# self-select on _WIN32, so one static lib builds on Windows, macOS and Linux.
+# ---------------------------------------------------------------------------
+file(GLOB MC2_ENET_SRC "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/enet/*.c")
+add_library(mc2_enet STATIC ${MC2_ENET_SRC})
+target_include_directories(mc2_enet PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/enet/include")
+if(WIN32)
+    target_link_libraries(mc2_enet PUBLIC ws2_32 winmm)
+endif()
+target_link_libraries(mc2 mc2_enet)   # plain signature: mc2 is linked plain-style above; CMake forbids mixing
+
+# Game-free proof-of-life for the transport (host + client on loopback).
+add_executable(mp_transport_check EXCLUDE_FROM_ALL
+    tests/mp/mptransport_check.cpp
+    code/mptransport.cpp)
+target_include_directories(mp_transport_check PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/code")
+target_link_libraries(mp_transport_check PRIVATE mc2_enet)
+set_target_properties(mp_transport_check PROPERTIES CXX_STANDARD 17)

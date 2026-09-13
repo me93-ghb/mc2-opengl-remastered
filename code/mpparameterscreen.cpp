@@ -720,10 +720,52 @@ void MPParameterScreen::update()
 	if ( MPlayer->commanderID < 0 )  // don't do anything until we've been initalized
 		return;
 
+	// Harness hooks. MC2_MP_AUTOJOIN: a client marks itself ready once. MC2_MP_AUTOHOST
+	// + MC2_MP_AUTOTEST=1: the host flips Air Strikes once, 5 s after a second player
+	// shows up, so a runner can see a settings change reach the client.
+	{
+		static bool s_autoReadySent = false;
+		static bool s_autoTestDone = false;
+		static float s_autoTestTimer = 0.f;
+		if ( !s_autoReadySent && !MPlayer->isHost() && getenv("MC2_MP_AUTOJOIN") )
+		{
+			MC2Player* me = MPlayer->getPlayerInfo( MPlayer->commanderID );
+			if ( me ) { me->ready = true; MPlayer->sendPlayerUpdate( 0, 5, MPlayer->commanderID ); }
+			s_autoReadySent = true;
+		}
+		if ( !s_autoTestDone && MPlayer->isHost() && getenv("MC2_MP_AUTOHOST") && getenv("MC2_MP_AUTOTEST") )
+		{
+			long n = 0; MPlayer->getPlayers( n );
+			if ( n >= 2 ) s_autoTestTimer += frameLength;
+			if ( s_autoTestTimer > 5.f )
+			{
+				MPlayer->missionSettings.airStrike ^= 1;
+				s_autoTestDone = true;
+				printf("[MP] autotest toggled airStrike=%d\n", MPlayer->missionSettings.airStrike ? 1 : 0);
+				fflush(stdout);
+			}
+		}
+		// MC2_MP_AUTOLAUNCH=<n>: host presses Launch once n players are present and every
+		// client is ready (same message the button sends).
+		static bool s_autoLaunched = false;
+		const char* autoLaunch = getenv("MC2_MP_AUTOLAUNCH");
+		if ( !s_autoLaunched && MPlayer->isHost() && autoLaunch && status == RUNNING )
+		{
+			long n = 0; MPlayer->getPlayers( n );
+			if ( n >= atol(autoLaunch) && MPlayer->allPlayersReady() )
+			{
+				s_autoLaunched = true;
+				printf("[MP] autolaunch: %ld players ready, pressing Launch\n", n);
+				fflush(stdout);
+				handleMessage( 50/*MB_MSG_NEXT*/, 50 );
+			}
+		}
+	}
 	if ( VERSION_STATUS_UNKNOWN == MPlayer->getVersionStatus() )
 	{
 		return;
 	}
+
 	else if ( VERSION_STATUS_BAD == MPlayer->getVersionStatus() )
 	{
 		if ( bErrorDlg )

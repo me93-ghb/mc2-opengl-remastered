@@ -2876,8 +2876,11 @@ void LogisticsData::startMultiPlayer()
 
 
 #ifdef LINUX_BUILD
-    // sebi !NB
-    ENTER_DEBUGGER
+	// macos-port: retail decrypted designer variant packs (data/multiplayer/*.var) here.
+	// mc2srcdata ships none and decryptFile() does not exist in this tree; the old
+	// ENTER_DEBUGGER (raise SIGTRAP) killed the game on the Multiplayer button.
+	if (getenv("MC2_LOG"))
+		printf("[MP] no multiplayer variant packs (data/multiplayer/*.var); quickstart lances only\n");
 #else
 	WIN32_FIND_DATA	findResult;
 	HANDLE searchHandle = FindFirstFile(findString,&findResult); 

@@ -369,7 +369,12 @@ HANDLE WINAPI FindFirstFileA( LPCTSTR lpFileName, LPWIN32_FIND_DATAA lpFindFileD
 
 BOOL WINAPI FindNextFileA(HANDLE hFindFile, LPWIN32_FIND_DATAA lpFindFileData)
 {
-    assert(hFindFile!=0);
+    // Retail code runs do/while(FindNextFile) loops without checking FindFirstFile's
+    // result (mpprefs.cpp insignia scan); Win32 returns FALSE for a bad handle.
+    if (hFindFile == 0 || hFindFile == INVALID_HANDLE_VALUE) {
+        gGetLastError = ERROR_NO_MORE_FILES;
+        return FALSE;
+    }
 
     FindFileData* ffd = (FindFileData*)hFindFile;
     assert(ffd->initialized);

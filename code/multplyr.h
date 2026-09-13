@@ -730,6 +730,7 @@ class MCMSG_Chat {
 		bool				allPlayers;
 		bool				isDeadChat;
 		bool				hideName;
+		char				senderCID;		// MP-1: origin commanderID (DirectPlay gave retail the sender; ENet relays via the host)
 		char				string[];
 	
 	public:
@@ -743,6 +744,7 @@ class MCMSG_Chat {
 			allPlayers = false;
 			isDeadChat = false;
 			hideName = false;
+			senderCID = -1;
 			string[0] = '\0';
 		}
 };
@@ -1474,7 +1476,7 @@ class MultiPlayer {
 		}
 
 		bool isServer (void) {
-				return(false);
+				return(iAmHost);	// MP-1: was a false stub, so the host never saw itself as host
 		}
 
 		void setServer (NETPLAYER player, char playerIPAddress[16]);
@@ -1488,7 +1490,7 @@ class MultiPlayer {
 		}
 
 		VersionStatus getVersionStatus (void) {
-			return(VERSION_STATUS_GOOD);
+			return(versionStatus);	// MP-1: GOOD on host, UNKNOWN on a client until the host answers
 		}
 
 		long update (void);
@@ -1509,7 +1511,10 @@ class MultiPlayer {
 		// for write purposes....
 		MC2Player* getPlayerInfo( long commanderID )
 		{
-			return NULL;
+			// MP-ENET-1: was a NULL stub; the MP setup screens dereference this.
+			if (commanderID < 0 || commanderID >= MAX_MC_PLAYERS)
+				return NULL;
+			return &playerInfo[commanderID];
 		}
 
 		bool hostSession(char* sessionName, char* playerName, long mxPlayers);
@@ -1560,6 +1565,7 @@ class MultiPlayer {
 
 		long joinGame (char* ipAddress, char* sessionName, char* playerName);
 
+		void logRoster (void);		// MP-2: '[MP] roster hash=' line for the harness
 		bool waitTillStartLoading (void);
 
 		bool waitTillMechDataReceived (void);
@@ -1678,6 +1684,12 @@ class MultiPlayer {
 		void processMessages (void);
 
 		long findPlayer (NETPLAYER player) {
+			// MP-ENET-1: commanderID of the slot holding this peer, or -1.
+			if (!player)
+				return(-1);
+			for (long i = 0; i < MAX_MC_PLAYERS; i++)
+				if (playerInfo[i].player == player)
+					return(i);
 			return(-1);
 		}
 
