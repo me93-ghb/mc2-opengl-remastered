@@ -726,7 +726,10 @@ void LogisticsMissionInfo::setSingleMission( const char* missionFileName )
 
 	currentStage = 0;
 
-	MissionInfo* pInfo = new MissionInfo;
+	// Value-init: stock left hidden/mandatory/completePrevious/playLogistics
+	// indeterminate here, so the single-mission path randomly hid the mission or
+	// skipped the mech bay depending on heap garbage.
+	MissionInfo* pInfo = new MissionInfo();
 	groups[0].infos.Append( pInfo );
 
 	groups[0].operationFileName = "MCL_CM_Op1_1.fit";
@@ -752,6 +755,7 @@ void LogisticsMissionInfo::setSingleMission( const char* missionFileName )
 	pInfo->completed = 0;
 	pInfo->playMissionSelection = 0;
 	pInfo->playPurchasing = true;
+	pInfo->playLogistics = true; // retail Single Mission: briefing -> mech bay -> launch
 	pInfo->playSalvage = 0;
 	pInfo->playPilotPromotion = 0;
 

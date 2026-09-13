@@ -609,6 +609,9 @@ void MPLoadMap::updateMapInfo()
 			cLoadString( IDS_MP_LM_MAP_LIST_MAP_NAME, text, 255 );
 			sprintf( text2, text, missionName );
 			setDefsElementText( kMpMapNameKey, text2 );
+			// Legacy bitmap-font label too: its default text is the raw "MAP NAME : %s"
+			// template, and aFont::render used to feed it to printf -> segfault.
+			textObjects[3].setText( text2 );
 
 			if ( !bIsSingle )
 			{
@@ -620,6 +623,7 @@ void MPLoadMap::updateMapInfo()
 				
 				sprintf( text2, text, mType );
 				setDefsElementText( kMpMissionTypeKey, text2 );
+				textObjects[4].setText( text2 );
 			
 	
 				unsigned long numPlayers = 0;
@@ -628,6 +632,7 @@ void MPLoadMap::updateMapInfo()
 				cLoadString( IDS_MP_LM_MAP_LIST_MAX_PLAYERS, text, 255 );
 				sprintf( text2, text, numPlayers );
 				setDefsElementText( kMpMaxPlayersKey, text2 );
+				textObjects[2].setText( text2 );
 			}
 			else
 			{
@@ -652,6 +657,7 @@ void MPLoadMap::updateMapInfo()
 			}
 
 			setDefsElementText( kMpMapInfoKey, blurb );
+			textObjects[5].setText( blurb );
 
   
 

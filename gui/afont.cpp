@@ -276,7 +276,7 @@ void aFont::render( const char* text, int xPos, int yPos, int areaWidth, int are
 	gos_TextSetRegion( xPos, yPos, xPos + areaWidth, yPos + areaHeight );
 	
 	gos_TextSetPosition( xPos, yPos );
-	gos_TextDraw( text );	
+	gos_TextDraw( "%s", text ); // text is data (labels, blurbs); never a format string	
 
 }
 

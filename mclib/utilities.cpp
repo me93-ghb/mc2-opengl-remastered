@@ -421,10 +421,10 @@ void drawShadowText( long colorTop, long colorShadow, HGOSFONT3D font,
 	gos_TextSetAttributes( font, colorShadow, scale, false, proportional, bold, false, 0 );
 	gos_TextSetRegion( 0, 0, Environment.screenWidth, Environment.screenHeight );
 	gos_TextSetPosition( left + xOffset, top + yOffset );
-	gos_TextDraw( text );
+	gos_TextDraw( "%s", text ); // caller text is data, never a format string
 	gos_TextSetAttributes( font, colorTop, scale, false, proportional, bold, false, 0 );
 	gos_TextSetPosition( left, top );
-	gos_TextDraw( text );
+	gos_TextDraw( "%s", text ); // caller text is data, never a format string
 
 }
 
@@ -435,11 +435,11 @@ void drawShadowText( long colorTop, long colorShadow, HGOSFONT3D font,
 	gos_TextSetAttributes( font, colorShadow, scale, true, proportional, bold, false, 2 );
 	gos_TextSetRegion( left + xOffset, top + yOffset, right + xOffset, bottom + yOffset);
 	gos_TextSetPosition( left + xOffset, top + yOffset );
-	gos_TextDraw( text );
+	gos_TextDraw( "%s", text ); // caller text is data, never a format string
 	gos_TextSetAttributes( font, colorTop, scale, true, proportional, bold, false, 2 );
 	gos_TextSetRegion( left, top, right, bottom );
 	gos_TextSetPosition( left, top );
-	gos_TextDraw( text );
+	gos_TextDraw( "%s", text ); // caller text is data, never a format string
 }
 
 
