@@ -489,6 +489,9 @@ void DEBUGWINS_display (bool* windowsOpen) {
 
 void DEBUGWINS_print (const char* s, long window) {
 
+	// MC2_ABL_PRINT=1: echo brain/mission-script prints to stdout (headless debugging).
+	static const bool s_echo = (getenv("MC2_ABL_PRINT") != NULL);
+	if (s_echo) { printf("[ABL_PRINT] %s\n", s); fflush(stdout); }
 	DebugWindow[window]->print(s);
 }
 

@@ -1281,10 +1281,22 @@ void execSetIntegerMemory (void) {
 
 //***************************************************************************
 
+// Pilot real-memory slots the engine has to know about (indices from warriors/oconst.abi).
+static const long  R_NOT_TARGETING_MOD       = 37;
+static const float DEFAULT_NOT_TARGETING_MOD = 0.9f;
+
 void execSetRealMemory (void) {
 
 	long memIndex = ABLi_popInteger();
 	float memValue = ABLi_popReal();
+	// pbrain (the brain every pilot runs in multiplayer) sets NotTargetingMod to 0, which
+	// zeroes the action rating of any enemy that is not already shooting at someone, so a
+	// player lance only ever returns fire. Single player never notices because AI brains
+	// pick targets first; with two player lances nobody engages until an attack order.
+	// Keep the orders-library default in multiplayer so fire-at-will works both ways.
+	// ponytail: clamp at the binding; an MP-specific brain is the upgrade once game data is versioned here.
+	if (MPlayer && (memIndex == R_NOT_TARGETING_MOD) && (memValue == 0.0f))
+		memValue = DEFAULT_NOT_TARGETING_MOD;
 	CurWarrior->setRealMemory(memIndex, memValue);
 }
 
