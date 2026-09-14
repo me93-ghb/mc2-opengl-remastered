@@ -177,6 +177,20 @@ void MissionResults::update()
 
 	if ( MPlayer )
 	{
+		// MC2_MP_AUTORESULTS=1: harness hook, presses Next on the stats panel after a short
+		// dwell so a headless rematch can be driven end to end. Default OFF.
+		static const bool s_mpAutoResults = ( std::getenv("MC2_MP_AUTORESULTS") != nullptr );
+		if ( s_mpAutoResults && mpStats.getStatus() == LogisticsScreen::RUNNING )
+		{
+			static float s_dwell = 0.0f;
+			s_dwell += frameLength;
+			if ( s_dwell >= 2.0f )
+			{
+				s_dwell = 0.0f;
+				printf("[MP] autoresults: pressing Next\n"); fflush(stdout);
+				mpStats.handleMessage( 50/*MB_MSG_NEXT*/, 50 );
+			}
+		}
 		mpStats.update();
 		if ( mpStats.getStatus() != LogisticsScreen::RUNNING )
 			bDone = true;

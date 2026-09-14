@@ -44,10 +44,14 @@ def main():
     ap.add_argument("--keep-logs", action="store_true")
     ap.add_argument("--no-launch", action="store_true", help="stop after the lobby checks")
     ap.add_argument("--play", type=int, default=150, help="seconds to keep both in-mission after start")
+    ap.add_argument("--orders", default="1", help="MC2_MP_SCRIPT_ORDERS for the client: 1=attack, move=move-only, capture=capture nearest building, move when none left")
+    ap.add_argument("--rematch", action="store_true", help="after the match ends, expect both to re-enter the lobby, re-ready, relaunch and load a second mission")
     a = ap.parse_args()
     logdir = os.path.join(REPO, "tests", "mp", "logs"); os.makedirs(logdir, exist_ok=True)
 
     henv = {"MC2_MP_AUTOHOST": "1", "MC2_MP_AUTOTEST": "1", "MC2_MP_PORT": str(a.port), "MC2_MP_SESSION": "smoke"}
+    if a.rematch:
+        henv["MC2_MP_AUTORESULTS"] = "1"; os.environ["MC2_MP_AUTORESULTS"] = "1"
     if not a.no_launch:
         henv["MC2_MP_AUTOLAUNCH"] = "2"
     host, hlog = start("host", henv, logdir)
@@ -63,7 +67,7 @@ def main():
 
     ok = check("host: hosting", hlog, r"\[MP\] hosting ")
     if ok:
-        client, clog = start("client", {"MC2_MP_AUTOJOIN": f"127.0.0.1:{a.port}", "MC2_MP_SCRIPT_ORDERS": "1"}, logdir)
+        client, clog = start("client", {"MC2_MP_AUTOJOIN": f"127.0.0.1:{a.port}", "MC2_MP_SCRIPT_ORDERS": a.orders}, logdir)
         procs.append(client)
         ok = (check("host: peer joined", hlog, r"\[MP\] peer .* joined -> commanderID 1")
               and check("client: assigned cid", clog, r"\[MP\] assigned commanderID 1")
@@ -90,8 +94,8 @@ def main():
                   and check("host: all started", hlog, r"\[MP\] mission setup sent subType=5")
                   and check("client: all started", clog, r"\[MP\] wait all started|\[MP\] mission setup sent subType=4"))
             if ok:
-                hh = re.search(r"roster hash=([0-9a-f]+) movers=(\d+) local=(\d+) seed=(0x[0-9a-f]+)", open(hlog, errors="replace").read())
-                ch = re.search(r"roster hash=([0-9a-f]+) movers=(\d+) local=(\d+) seed=(0x[0-9a-f]+)", open(clog, errors="replace").read())
+                hh = re.search(r"roster hash=([0-9a-f]+) movers=(\d+) local=(\d+)(?: turrets=\d+)? seed=(0x[0-9a-f]+)", open(hlog, errors="replace").read())
+                ch = re.search(r"roster hash=([0-9a-f]+) movers=(\d+) local=(\d+)(?: turrets=\d+)? seed=(0x[0-9a-f]+)", open(clog, errors="replace").read())
                 same = hh and ch and hh.group(1) == ch.group(1) and hh.group(4) == ch.group(4)
                 checks.append(("roster+seed identical", bool(same), f"host={hh.groups() if hh else None} client={ch.groups() if ch else None}"))
                 print(f"[mp-smoke] {'PASS' if same else 'FAIL'} roster+seed identical: host={hh.groups() if hh else None} client={ch.groups() if ch else None}", flush=True)
@@ -146,11 +150,22 @@ def main():
                 fired = any("[MP] fire chunks sent" in l for l in open(hlog, errors="replace"))
                 hitsent = any("[MP] weapon hits sent" in l for l in open(hlog, errors="replace"))
                 hitapplied = [l for l in open(clog, errors="replace") if "[MP] weapon hits applied=" in l and "applied=0" not in l]
-                print(f"[mp-smoke] {'PASS' if fired else 'FAIL'} host: weapon fire relayed", flush=True)
-                print(f"[mp-smoke] {'PASS' if hitsent else 'FAIL'} host: weapon hits sent", flush=True)
-                print(f"[mp-smoke] {'PASS' if hitapplied else 'FAIL'} client: weapon hits applied ({len(hitapplied)} batches)", flush=True)
+                nf = "INFO" if a.orders == "capture" else "FAIL"   # combat is not required in capture runs
+                print(f"[mp-smoke] {'PASS' if fired else nf} host: weapon fire relayed", flush=True)
+                print(f"[mp-smoke] {'PASS' if hitsent else nf} host: weapon hits sent", flush=True)
+                print(f"[mp-smoke] {'PASS' if hitapplied else nf} client: weapon hits applied ({len(hitapplied)} batches)", flush=True)
                 checks += [("fire relayed", fired, ""), ("hits sent", hitsent, ""), ("hits applied", bool(hitapplied), "")]
-                ok = ok and fired and hitsent and bool(hitapplied)
+                if a.orders != "capture":   # capture runs walk to buildings; the lances need not meet
+                    ok = ok and fired and hitsent and bool(hitapplied)
+                # MP-3 slice 4: world events (kills/losses at least) reach the client
+                wsent = any("[MP] world updates sent=" in l for l in open(hlog, errors="replace"))
+                if wsent:  # relay latency: give the client a moment to log the application
+                    wait_for(clog, r"\[MP\] world updates applied=[1-9]", time.time() + 15, procs)
+                wapplied = [l for l in open(clog, errors="replace") if "[MP] world updates applied=" in l and "applied=0" not in l]
+                print(f"[mp-smoke] {'PASS' if wsent else 'FAIL'} host: world updates sent", flush=True)
+                print(f"[mp-smoke] {'PASS' if wapplied else 'FAIL'} client: world updates applied ({len(wapplied)} batches)", flush=True)
+                checks += [("world sent", wsent, ""), ("world applied", bool(wapplied), "")]
+                ok = ok and wsent and bool(wapplied)
                 ended = [l.strip() for p in (hlog, clog) for l in open(p, errors="replace") if "[MP] mission over" in l]
                 # A mission end is fine (that's a won match) as long as both sides agree on the
                 # winner and it did not happen in the first 20 s.
@@ -159,6 +174,55 @@ def main():
                 end_ok = (not ended) or (len(ended) == 2 and len(winners) == 1 and min(times) > 20.0)
                 print(f"[mp-smoke] {'PASS' if end_ok else 'FAIL'} mission end consistent: {ended[:2]}", flush=True)
                 ok = ok and alive and end_ok
+        if a.orders == "capture":
+            # Captures: every [MP_CAP] the host queued must be applied on the client, and the
+            # resource-point totals per commander must end up identical on both sides.
+            def caps(path): return [l.strip().split("] ",1)[1] for l in open(path, errors="replace") if "[MP_CAP]" in l]
+            wait_for(clog, r"\[MP_CAP\]", time.time() + 15, procs)
+            hc, cc = caps(hlog), caps(clog)
+            cap_ok = bool(hc) and all(x in cc for x in hc)
+            print(f"[mp-smoke] {'PASS' if cap_ok else 'FAIL'} captures relayed: host={len(hc)} client={len(cc)} missing={[x for x in hc if x not in cc][:3]}", flush=True)
+            def rp(path):
+                tot = {}
+                for l in open(path, errors="replace"):
+                    mm = re.search(r"\[MP_RP\] cid=(\d+) delta=(-?\d+) total=(-?\d+)", l)
+                    if mm: tot[mm.group(1)] = mm.group(3)
+                return tot
+            hr, cr = rp(hlog), rp(clog)
+            rp_ok = bool(hr) and hr == cr
+            print(f"[mp-smoke] {'PASS' if rp_ok else 'FAIL'} resource points agree: host={hr} client={cr}", flush=True)
+            ok = ok and cap_ok and rp_ok
+        if ok and a.rematch:
+            # Rematch: results dismissed by MC2_MP_AUTORESULTS, both back in the lobby ([2][1]),
+            # client re-readies, host relaunches, both load a second mission with identical rosters.
+            def count(path, pat):
+                rx = re.compile(pat); return sum(1 for l in open(path, errors="replace") if rx.search(l))
+            def wait_count(name, path, pat, n, deadline):
+                while time.time() < deadline:
+                    if any(p.poll() is not None for p in procs):
+                        print(f"[mp-smoke] FAIL {name}: process exited early", flush=True); return False
+                    if count(path, pat) >= n:
+                        print(f"[mp-smoke] PASS {name}", flush=True); return True
+                    time.sleep(1)
+                print(f"[mp-smoke] FAIL {name}: timeout (count={count(path, pat)} < {n})", flush=True); return False
+            dl = time.time() + 300
+            ok = (wait_count("host: mission over", hlog, r"\[MP\] mission over", 1, dl)
+                  and wait_count("client: mission over", clog, r"\[MP\] mission over", 1, dl)
+                  and wait_count("host: results dismissed", hlog, r"\[MP\] autoresults", 1, dl)
+                  and wait_count("client: results dismissed", clog, r"\[MP\] autoresults", 1, dl)
+                  and wait_count("host: back in lobby", hlog, r"\[MP\] screen \[2\]\[1\]", 2, dl)
+                  and wait_count("client: back in lobby", clog, r"\[MP\] screen \[2\]\[1\]", 2, dl)
+                  and wait_count("host: second autolaunch", hlog, r"\[MP\] autolaunch", 2, dl)
+                  and wait_count("host: second mission_ready", hlog, r"phase=mission_ready", 2, dl)
+                  and wait_count("client: second mission_ready", clog, r"phase=mission_ready", 2, dl)
+                  and wait_count("host: second roster", hlog, r"\[MP\] roster hash=", 2, dl)
+                  and wait_count("client: second roster", clog, r"\[MP\] roster hash=", 2, dl))
+            if ok:
+                rx = re.compile(r"roster hash=([0-9a-f]+) .*seed=(0x[0-9a-f]+)")
+                hh = [rx.search(l).groups() for l in open(hlog, errors="replace") if rx.search(l)]
+                ch = [rx.search(l).groups() for l in open(clog, errors="replace") if rx.search(l)]
+                ok = len(hh) >= 2 and len(ch) >= 2 and hh[1] == ch[1]
+                print(f"[mp-smoke] {'PASS' if ok else 'FAIL'} rematch roster+seed identical: host={hh[1:2]} client={ch[1:2]}", flush=True)
         unhandled = [l.strip() for p in (hlog, clog) for l in open(p, errors="replace") if "unhandled msg type" in l]
         if unhandled:
             ok = False; print("[mp-smoke] FAIL unhandled messages:", unhandled[:5], flush=True)

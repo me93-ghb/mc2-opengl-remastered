@@ -107,6 +107,11 @@ public:
 #define	MAX_MULTIPLAYER_TURRETS			128
 #define	MAX_WEAPONHIT_CHUNKS			1024
 #define	MAX_WORLD_CHUNKS				1024
+
+// MP-3 world events the host relays: one plain struct per event, no bit packing
+// (both peers are the same build; the lobby version stamp enforces it).
+enum MpWorldKind { MP_WORLD_MINE = 1, MP_WORLD_FIRE, MP_WORLD_ARTILLERY, MP_WORLD_CAPTURE, MP_WORLD_SCRIPT_MSG, MP_WORLD_KILL_LOSS };
+struct MpWorldEntry { unsigned char kind; int a, b, c, d; float x, y, z; };
 #define MAX_STORED_CHATS				16
 #define MAX_CHAT_LENGTH					128
 
@@ -934,6 +939,10 @@ class MCMSG_HoldPosition {
 		unsigned char	type;
 		char			commanderID;
 		unsigned short	flags;
+		unsigned char	numMovers;
+		unsigned char	moverIndex[MAX_LOCAL_MOVERS];	// net roster index of each selected mover
+		unsigned char	attackRange[MAX_LOCAL_MOVERS];	// FireRangeType the client's UI has for it
+		unsigned char	fireFromCurrentPos;
 
 	public:
 
@@ -945,6 +954,8 @@ class MCMSG_HoldPosition {
 			type = MCMSG_HOLD_POSITION;
 			commanderID = -1;
 			flags = 0;
+			numMovers = 0;
+			fireFromCurrentPos = 0;
 		}
 };
 
@@ -990,8 +1001,8 @@ class MCMSG_PlayerArtillery {
 	public:
 
 		unsigned char		type;
-		float				location[2];
-		unsigned long		chunk;
+		float				location[3];
+		unsigned long		chunk;			// strikeType | secondsToImpact << 8
 
 		MCMSG_PlayerArtillery (void) {
 			init();
@@ -999,8 +1010,7 @@ class MCMSG_PlayerArtillery {
 
 		void init (void) {
 			type = MCMSG_PLAYER_ARTILLERY;
-			location[0] = 0.0;
-			location[1] = 0.0;
+			location[0] = location[1] = location[2] = 0.0;
 			chunk = 0;
 		}
 };
@@ -1089,8 +1099,8 @@ class MCMSG_TurretWeaponFireUpdate {
 	public:
 
 		unsigned char		type;
-		char				numTurrets;
-		unsigned short		info[];
+		char				numTurrets;			// RLE count: idx, n, n packed chunks
+		unsigned char		data[];
 
 	public:
 
@@ -1166,8 +1176,8 @@ class MCMSG_WorldUpdate {
 
 		unsigned char		type;
 		unsigned char		numWorldChanges;
-		unsigned char		numArtilleryStrikes;
-		unsigned long		worldChunk[];
+		unsigned char		numArtilleryStrikes;	// unused (MP-3 sends MpWorldEntry records)
+		MpWorldEntry		entry[];
 
 	public:
 
@@ -1413,7 +1423,7 @@ class MultiPlayer {
 		long				numWeaponHitChunks;
 		unsigned long		weaponHitChunks[MAX_WEAPONHIT_CHUNKS];
 		long				numWorldChunks;
-		unsigned long		worldChunks[MAX_WORLD_CHUNKS];
+		MpWorldEntry		worldChunks[MAX_WORLD_CHUNKS];
 		unsigned long		serverOrder[MAX_MC_PLAYERS];
 		long				reinforcements[MAX_MC_PLAYERS][2];	// index 0 = current reinforcement, index 1 = current recoverery
 		char				reinforcementPilot[MAX_MC_PLAYERS][32];
@@ -1612,6 +1622,10 @@ class MultiPlayer {
 		void removeFromMoverRoster (MoverPtr mover);
 
 		void addToTurretRoster (TurretPtr turret);
+		long queueWorld (long kind, long a, long b, long c = 0, long d = 0, float x = 0.0f, float y = 0.0f, float z = 0.0f);	// MP-3 world relay
+		void applyWorldEntry (const MpWorldEntry& e);
+		void applyKillLoss (long killerCID, long loserCID);
+		void applyReinforcement (MCMSG_Reinforcement* msg, bool fromNetwork);
 
 		void addToPlayerMoverRoster (long playerCommanderID, MoverPtr mover);
 

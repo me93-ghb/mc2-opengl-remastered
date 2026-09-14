@@ -196,8 +196,16 @@ void MPParameterScreen::init(FitIniFile* file)
 
 }
 
+// Harness hook latches (see update): re-armed every time the lobby screen begins, so a
+// rematch after the results screen readies and launches again by itself.
+static bool  s_autoReadySent = false;
+static bool  s_autoTestDone  = false;
+static float s_autoTestTimer = 0.f;
+static bool  s_autoLaunched  = false;
+
 void MPParameterScreen::begin()
 {
+	s_autoReadySent = false; s_autoTestDone = false; s_autoTestTimer = 0.f; s_autoLaunched = false;
 
 	fadeOutTime = 0.f;
 	fadeTime = 0.f;
@@ -724,9 +732,6 @@ void MPParameterScreen::update()
 	// + MC2_MP_AUTOTEST=1: the host flips Air Strikes once, 5 s after a second player
 	// shows up, so a runner can see a settings change reach the client.
 	{
-		static bool s_autoReadySent = false;
-		static bool s_autoTestDone = false;
-		static float s_autoTestTimer = 0.f;
 		if ( !s_autoReadySent && !MPlayer->isHost() && getenv("MC2_MP_AUTOJOIN") )
 		{
 			MC2Player* me = MPlayer->getPlayerInfo( MPlayer->commanderID );
@@ -747,7 +752,6 @@ void MPParameterScreen::update()
 		}
 		// MC2_MP_AUTOLAUNCH=<n>: host presses Launch once n players are present and every
 		// client is ready (same message the button sends).
-		static bool s_autoLaunched = false;
 		const char* autoLaunch = getenv("MC2_MP_AUTOLAUNCH");
 		if ( !s_autoLaunched && MPlayer->isHost() && autoLaunch && status == RUNNING )
 		{

@@ -108,6 +108,9 @@
 
 // MP-ENET-1: cross-platform UDP transport behind the stubbed DirectPlay seam.
 #include"mptransport.h"
+#include"contact.h"
+#include"weaponfx.h"	// MINE_EXPLOSION_ID
+#include"dbldng.h"	// GENERIC_HQ_BUILDING_OBJNUM
 #include<stdlib.h>
 #include<vector>
 #include<stdint.h>
@@ -509,10 +512,13 @@ long MultiPlayer::update (void) {
 			if (now - s_lastMoverUpdate >= (unsigned long)kMpMoverUpdateMs) {
 				s_lastMoverUpdate = now;
 				sendMoverUpdate();
+				sendTurretUpdate();
 			}
 			sendMoverWeaponFireUpdate();	// each early-returns when there is nothing queued
+			sendTurretWeaponFireUpdate();
 			sendMoverCriticalUpdate();
 			sendWeaponHitUpdate();
+			sendWorldUpdate();
 		}
 		missionDiagnostics();
 	}
@@ -748,6 +754,27 @@ void MultiPlayer::missionDiagnostics (void) {
 			m->getCellPosition(r, c);
 			printf("[MP_POS] t=%.0f cid=%ld idx=%ld r=%d c=%d dead=%d\n", mission->actualTime, m->getCommanderId(), i, r, c, m->isDestroyed() ? 1 : 0);
 		}
+		// [MP_SENSOR]: per-team sensor contacts (client visibility). [MP_TGT] every 10 s: does
+		// each pilot have a target / order on its own (fire-at-will), and how many visible enemies.
+		for (long t = 0; t < Team::numTeams; t++) {
+			TeamSensorSystemPtr ts = SensorManager ? SensorManager->getTeamSensor(t) : NULL;
+			if (ts)
+				printf("[MP_SENSOR] t=%.0f team=%ld home=%d sensors=%ld contacts=%ld\n", mission->actualTime, t,
+					(Team::home && Team::home->getId() == t) ? 1 : 0, ts->numSensors, ts->numContacts);
+		}
+		static unsigned long s_lastTgt = 0;
+		if (now - s_lastTgt >= 10000) {
+			s_lastTgt = now;
+			for (long i = 0; i < MAX_MULTIPLAYER_MOVERS; i++) {
+				MoverPtr m = moverRoster[i];
+				if (!m || m->isDestroyed() || !m->getPilot()) continue;
+				int cl[MAX_CONTACTS_PER_SENSOR];
+				GameObjectPtr tgt = m->getPilot()->getLastTarget();
+				printf("[MP_TGT] t=%.0f cid=%ld idx=%ld ctl=%d tgt=%ld order=%d enemiesVisible=%ld\n", mission->actualTime, m->getCommanderId(), i,
+					(int)m->control.getType(), tgt ? (long)tgt->getWatchID() : 0L, (int)m->getPilot()->getCurTacOrder()->code,
+					m->getContacts(cl, CONTACT_CRITERIA_ENEMY | CONTACT_CRITERIA_VISUAL, CONTACT_SORT_NONE));
+			}
+		}
 		fflush(stdout);
 	}
 	if (!iAmHost && getenv("MC2_MP_SCRIPT_ORDERS") && now - s_missionT0 > 10000 && now - s_lastOrder >= 20000) {
@@ -761,13 +788,42 @@ void MultiPlayer::missionDiagnostics (void) {
 			MoverPtr m = localMovers[i];
 			if (!m || m->isDestroyed()) continue;
 			TacticalOrder tacOrder;
-			tacOrder.init(ORDER_ORIGIN_PLAYER, TACTICAL_ORDER_ATTACK_OBJECT);
-			tacOrder.targetWID = enemy->getWatchID();
-			tacOrder.attackParams.type = ATTACK_TO_DESTROY;
-			tacOrder.attackParams.method = ATTACKMETHOD_RANGED;
-			tacOrder.attackParams.range = FIRERANGE_OPTIMAL;
-			tacOrder.attackParams.pursue = true;
-			tacOrder.moveParams.wayPath.mode[0] = TRAVEL_MODE_FAST;
+			GameObjectPtr capTarget = NULL;
+			if (strcmp(getenv("MC2_MP_SCRIPT_ORDERS"), "capture") == 0) {
+				// Nearest building this lance can still capture (turret controls, resource buildings).
+				float best = 1.0e30f;
+				for (long b = 0; b < ObjectManager->getNumBuildings(); b++) {
+					BuildingPtr bld = ObjectManager->getBuilding(b);
+					if (!bld || !bld->isCaptureable(m->getTeamId())) continue;
+					float d = m->distanceFrom(bld->getPosition());
+					if (d < best) { best = d; capTarget = bld; }
+				}
+			}
+			if (capTarget) {
+				tacOrder.init(ORDER_ORIGIN_PLAYER, TACTICAL_ORDER_CAPTURE);
+				tacOrder.targetWID = capTarget->getWatchID();
+				tacOrder.attackParams.type = ATTACK_NONE;
+				tacOrder.attackParams.method = ATTACKMETHOD_RAMMING;
+				tacOrder.attackParams.pursue = true;
+				tacOrder.moveParams.wayPath.mode[0] = TRAVEL_MODE_FAST;
+				}
+			else if (strcmp(getenv("MC2_MP_SCRIPT_ORDERS"), "move") == 0 || strcmp(getenv("MC2_MP_SCRIPT_ORDERS"), "capture") == 0) {
+				// Plain move toward the enemy: exercises fire-at-will on both lances.
+				tacOrder.init(ORDER_ORIGIN_PLAYER, TACTICAL_ORDER_MOVETO_POINT, false);
+				Stuff::Vector3D p = enemy->getPosition();
+				tacOrder.setWayPoint(0, p);
+				tacOrder.moveParams.wait = false;
+				tacOrder.moveParams.wayPath.mode[0] = TRAVEL_MODE_FAST;
+				}
+			else {
+				tacOrder.init(ORDER_ORIGIN_PLAYER, TACTICAL_ORDER_ATTACK_OBJECT);
+				tacOrder.targetWID = enemy->getWatchID();
+				tacOrder.attackParams.type = ATTACK_TO_DESTROY;
+				tacOrder.attackParams.method = ATTACKMETHOD_RANGED;
+				tacOrder.attackParams.range = FIRERANGE_OPTIMAL;
+				tacOrder.attackParams.pursue = true;
+				tacOrder.moveParams.wayPath.mode[0] = TRAVEL_MODE_FAST;
+			}
 			tacOrder.pack(NULL, NULL);
 			sendPlayerOrder(&tacOrder, false, 1, &m);
 		}
@@ -784,6 +840,7 @@ void MultiPlayer::resetForNewGame (void) {
 	memset(turretRoster, 0, sizeof(turretRoster));
 	numMovers = numLocalMovers = numTurrets = 0;
 	numWeaponHitChunks = 0;
+	numWorldChunks = 0;
 	memset(s_lastSentValidChunk, 0, sizeof(s_lastSentValidChunk));
 	s_haveMoverUpdate = false;
 	startLogistics = startLoading = startMission = setupMission = endMission = false;
@@ -804,6 +861,12 @@ void MultiPlayer::resetForNewGame (void) {
 }
 
 void MultiPlayer::logRoster (void) {
+	// Turrets are map objects, created in the same order on every machine: index them once here.
+	if (numTurrets == 0 && ObjectManager)
+		for (long i = 0; i < ObjectManager->getNumTurrets(); i++) {
+			TurretPtr t = ObjectManager->getTurret(i);
+			if (t) { t->setNetRosterIndex(numTurrets); addToTurretRoster(t); }
+		}
 	// One line both sides can be compared on: order-sensitive hash of type + start cell per roster slot.
 	unsigned long h = 2166136261UL;
 	long count = 0;
@@ -817,7 +880,7 @@ void MultiPlayer::logRoster (void) {
 		h = (h ^ v) * 16777619UL;
 		count++;
 	}
-	printf("[MP] roster hash=%08lx movers=%ld local=%ld seed=0x%08lx\n", h & 0xffffffffUL, count, numLocalMovers, (unsigned long)randomSeed);
+	printf("[MP] roster hash=%08lx movers=%ld local=%ld turrets=%ld seed=0x%08lx\n", h & 0xffffffffUL, count, numLocalMovers, numTurrets, (unsigned long)randomSeed);
 	fflush(stdout);
 }
 
@@ -1117,6 +1180,70 @@ void MultiPlayer::initSpecialBuildings (char commandersToLoad[8][3]) {
 // WORLD CHUNK maintenance functions
 //***************************************************************************
 
+// MP-3 world relay: the host queues one MpWorldEntry per event and drains them into
+// MCMSG_WorldUpdate every frame; clients replay them through the same game calls.
+long MultiPlayer::queueWorld (long kind, long a, long b, long c, long d, float x, float y, float z) {
+	if (!iAmHost || !inSession)
+		return(0);
+	if (numWorldChunks >= MAX_WORLD_CHUNKS)
+		return(0);	// drop rather than overflow; the event still happened on the host
+	MpWorldEntry& e = worldChunks[numWorldChunks++];
+	e.kind = (unsigned char)kind; e.a = (int)a; e.b = (int)b; e.c = (int)c; e.d = (int)d; e.x = x; e.y = y; e.z = z;
+	return(numWorldChunks);
+}
+
+void MultiPlayer::applyKillLoss (long killerCID, long loserCID) {
+	if (killerCID >= 0 && killerCID < MAX_MC_PLAYERS)
+		playerInfo[killerCID].kills++;
+	if (loserCID >= 0 && loserCID < MAX_MC_PLAYERS)
+		playerInfo[loserCID].losses++;
+}
+
+void MultiPlayer::applyWorldEntry (const MpWorldEntry& e) {
+	switch (e.kind) {
+		case MP_WORLD_MINE: {
+			GameMap->setMine(e.a, e.b, (unsigned long)e.c);
+			if (e.d == 2) {	// mine went off: effect only, the host relays the damage as weapon hits
+				Stuff::Vector3D p;
+				land->cellToWorld(e.a, e.b, p);
+				ObjectManager->createExplosion(MINE_EXPLOSION_ID, NULL, p, 0.0f, MineSplashRange * worldUnitsPerMeter);
+			}
+			break;
+		}
+		case MP_WORLD_FIRE: {
+			GameObjectPtr o = ObjectManager->findByPartId(e.a);
+			if (o && o->getObjectClass() == TERRAINOBJECT)
+				((TerrainObjectPtr)o)->lightOnFire((float)e.b);
+			break;
+		}
+		case MP_WORLD_ARTILLERY: {
+			Stuff::Vector3D loc(e.x, e.y, e.z);
+			CallArtillery(e.a, e.b, loc, e.c, false);	// not the server: creates the strike, queues nothing
+			break;
+		}
+		case MP_WORLD_CAPTURE: {
+			GameObjectPtr o = ObjectManager->findByPartId(e.a);
+			if (o && o->isBuilding()) {
+				if (o->getObjectType()->getObjTypeNum() == GENERIC_HQ_BUILDING_OBJNUM && missionSettings.missionType == MISSION_TYPE_CAPTURE_BASE)
+					o->setFlag(OBJECT_FLAG_CAPTURABLE, false);
+				o->setCommanderId(e.b);
+				o->setTeamId(e.c, false);	// same pair the host's capture order applies; turrets follow their parent's team
+				if (getenv("MC2_LOG")) printf("[MP_CAP] pid=%d cid=%d team=%d\n", e.a, e.b, e.c);
+			}
+			break;
+		}
+		case MP_WORLD_SCRIPT_MSG:
+			if (mission)
+				mission->handleMultiplayMessage(e.a, e.b);
+			break;
+		case MP_WORLD_KILL_LOSS:
+			applyKillLoss(e.a, e.b);
+			break;
+		default:
+			break;
+	}
+}
+
 long MultiPlayer::addWorldChunk (WorldChunkPtr chunk) {
 
 	return(0);
@@ -1125,29 +1252,26 @@ long MultiPlayer::addWorldChunk (WorldChunkPtr chunk) {
 //---------------------------------------------------------------------------
 
 long MultiPlayer::addMissionScriptMessageChunk (long code, long param) {
-
-	return(0);
+	return(queueWorld(MP_WORLD_SCRIPT_MSG, code, param));
 }
 
 //---------------------------------------------------------------------------
 
 long MultiPlayer::addArtilleryChunk (long commanderId, long artilleryType, Stuff::Vector3D location, long seconds) 
 {
-	return(0);
+	return(queueWorld(MP_WORLD_ARTILLERY, commanderId, artilleryType, seconds, 0, location.x, location.y, location.z));
 }
 
 //---------------------------------------------------------------------------
 
 long MultiPlayer::addMineChunk (long tileR, long tileC, long teamId, long mineState, long explosionType) {
-
-	return(0);
+	return(queueWorld(MP_WORLD_MINE, tileR, tileC, mineState, explosionType));
 }
 
 //---------------------------------------------------------------------------
 
 long MultiPlayer::addLightOnFireChunk (GameObjectPtr object, long seconds) {
-
-	return(0);
+	return(queueWorld(MP_WORLD_FIRE, object ? object->getPartId() : 0, seconds));
 }
 
 //---------------------------------------------------------------------------
@@ -1167,8 +1291,8 @@ long MultiPlayer::addScoreChunk (long commanderID, long score) {
 //---------------------------------------------------------------------------
 
 long MultiPlayer::addKillLossChunk (long killerCID, long loserCID) {
-
-	return(0);
+	applyKillLoss(killerCID, loserCID);	// the host keeps its own tally too
+	return(queueWorld(MP_WORLD_KILL_LOSS, killerCID, loserCID));
 }
 
 //---------------------------------------------------------------------------
@@ -1181,8 +1305,9 @@ long MultiPlayer::addEndMissionChunk (void) {
 //---------------------------------------------------------------------------
 
 long MultiPlayer::addCaptureBuildingChunk (BuildingPtr building, long prevCommanderID, long newCommanderID) {
-
-	return(0);
+	long team = (newCommanderID >= 0 && newCommanderID < MAX_MC_PLAYERS) ? playerInfo[newCommanderID].team : -1;
+	if (getenv("MC2_LOG") && building) printf("[MP_CAP] pid=%ld cid=%ld team=%ld\n", (long)building->getPartId(), newCommanderID, team);
+	return(queueWorld(MP_WORLD_CAPTURE, building ? building->getPartId() : 0, newCommanderID, team));
 }
 
 //---------------------------------------------------------------------------
@@ -1393,8 +1518,47 @@ void MultiPlayer::sendEndMission (long result) {
 //---------------------------------------------------------------------------
 extern MoverPtr BringInReinforcement (long vehicleID, long rosterIndex, long commanderID, Stuff::Vector3D pos, bool exists);
 
-void MultiPlayer::sendReinforcement (long vehicleID, long rosterIndex, const char pilotName[16], long commanderID, Stuff::Vector3D pos, unsigned char stage) {
+void MultiPlayer::applyReinforcement (MCMSG_Reinforcement* msg, bool fromNetwork) {
+	long cid = msg->commanderID;
+	switch (msg->stage) {
+		case 6:	// resource points delta (vehicleID carries the amount: kills, captured buildings, purchases)
+			if (cid >= 0 && cid < MAX_MC_PLAYERS) {
+				playerInfo[cid].resourcePoints += msg->vehicleID;
+				if (msg->vehicleID > 0) playerInfo[cid].resourcePointsGained += msg->vehicleID;
+				if (fromNetwork && cid == commanderID && LogisticsData::instance)
+					LogisticsData::instance->addResourcePoints((int)msg->vehicleID);
+				if (getenv("MC2_LOG")) printf("[MP_RP] cid=%ld delta=%ld total=%ld\n", cid, (long)msg->vehicleID, playerInfo[cid].resourcePoints);
+			}
+			break;
+		case 7: {	// mover dropped from its force group on the owner's machine
+			MoverPtr m = (msg->rosterIndex < MAX_MULTIPLAYER_MOVERS) ? moverRoster[msg->rosterIndex] : NULL;
+			if (m && fromNetwork)
+				m->addToUnitGroup(-1);
+			break;
+		}
+		default:
+			break;
+	}
+}
 
+void MultiPlayer::sendReinforcement (long vehicleID, long rosterIndex, const char pilotName[16], long commanderID, Stuff::Vector3D pos, unsigned char stage) {
+	if (!inSession)
+		return;
+	if (stage != 6 && stage != 7) {
+		// ponytail: VTOL drops / recovery (stages 0,2,3,5) need the MP purchase flow first (lobby RP is 0 today).
+		if (getenv("MC2_LOG")) printf("[MP] reinforcement stage %d not relayed\n", (int)stage);
+		return;
+	}
+	MCMSG_Reinforcement msg;
+	msg.init();
+	msg.stage = stage;
+	msg.rosterIndex = (unsigned char)rosterIndex;
+	msg.vehicleID = vehicleID;
+	strncpy(msg.pilotName, pilotName ? pilotName : "", sizeof(msg.pilotName) - 1);
+	msg.commanderID = (char)commanderID;
+	msg.location[0] = pos.x; msg.location[1] = pos.y;
+	applyReinforcement(&msg, false);	// our own event: the caller already changed LogisticsData / the group
+	sendMessage(NULL, &msg, sizeof(msg), true /*GUARANTEED*/, false);
 }
 
 //-----------------------------------------------------------------------------
@@ -1458,7 +1622,28 @@ void MultiPlayer::sendPlayerOrder (TacticalOrderPtr tacOrder,
 //---------------------------------------------------------------------------
 
 void MultiPlayer::sendHoldPosition (void) {
-
+	// Client side of ControlGui::toggleHoldPosition: the host owns the tac orders, so ship the
+	// selection plus the UI's range settings and let it patch the live orders (handleHoldPosition).
+	if (iAmHost || !inSession || !Team::home || !Commander::home)
+		return;
+	MCMSG_HoldPosition msg;
+	msg.init();
+	msg.commanderID = (char)commanderID;
+	ControlGui* gui = MissionInterfaceManager::instance() ? MissionInterfaceManager::instance()->getControlGui() : NULL;
+	msg.fireFromCurrentPos = (gui && gui->getFireFromCurrentPos()) ? 1 : 0;
+	for (long i = 0; i < Team::home->getRosterSize() && msg.numMovers < MAX_LOCAL_MOVERS; i++) {
+		MoverPtr m = Team::home->getMover(i);
+		if (!m || !m->isSelected() || !m->getCommander() || m->getCommander()->getId() != Commander::home->getId())
+			continue;
+		long idx = m->getNetRosterIndex();
+		if (idx < 0 || idx >= MAX_MULTIPLAYER_MOVERS) continue;
+		msg.moverIndex[msg.numMovers] = (unsigned char)idx;
+		msg.attackRange[msg.numMovers] = (unsigned char)m->attackRange;
+		msg.numMovers++;
+	}
+	if (!msg.numMovers)
+		return;
+	sendMessage(NULL, &msg, sizeof(msg), true /*GUARANTEED*/, false);
 }
 
 //---------------------------------------------------------------------------
@@ -1473,7 +1658,13 @@ void MultiPlayer::sendPlayerMoverGroup (long groupId,
 //---------------------------------------------------------------------------
 
 void MultiPlayer::sendPlayerArtillery (long strikeType, Stuff::Vector3D location, long seconds) {
-
+	if (iAmHost || !inSession)
+		return;
+	MCMSG_PlayerArtillery msg;
+	msg.init();
+	msg.location[0] = location.x; msg.location[1] = location.y; msg.location[2] = location.z;
+	msg.chunk = ((unsigned long)strikeType & 0xff) | (((unsigned long)seconds & 0xffff) << 8);
+	sendMessage(NULL, &msg, sizeof(msg), true /*GUARANTEED*/, false);
 }
 
 
@@ -1519,7 +1710,20 @@ void MultiPlayer::sendMoverUpdate (void) {
 //---------------------------------------------------------------------------
 
 void MultiPlayer::sendTurretUpdate (void) {
-
+	if (!iAmHost || !inSession || mode != MULTIPLAYER_MODE_MISSION || numTurrets <= 0)
+		return;
+	static unsigned short s_turretUpdateId = 0;
+	unsigned char buf[sizeof(MCMSG_TurretUpdate) + MAX_MULTIPLAYER_TURRETS];
+	MCMSG_TurretUpdate* msg = (MCMSG_TurretUpdate*)buf;
+	msg->init();
+	msg->updateId = ++s_turretUpdateId;
+	for (long i = 0; i < numTurrets; i++) {
+		TurretPtr t = turretRoster[i];
+		GameObjectPtr target = (t && t->targetWID) ? ObjectManager->getByWatchID(t->targetWID) : NULL;
+		long idx = (target && target->isMover()) ? ((MoverPtr)target)->getNetRosterIndex() : -1;
+		msg->targetList[i] = (char)((idx >= 0 && idx < 127) ? idx : -1);
+	}
+	sendMessage(NULL, msg, (int)(sizeof(MCMSG_TurretUpdate) + numTurrets), false /*unreliable*/, false);
 }
 
 //---------------------------------------------------------------------------
@@ -1555,7 +1759,29 @@ void MultiPlayer::sendMoverWeaponFireUpdate (void) {
 //---------------------------------------------------------------------------
 
 void MultiPlayer::sendTurretWeaponFireUpdate (void) {
-
+	if (!iAmHost || !inSession || mode != MULTIPLAYER_MODE_MISSION || numTurrets <= 0)
+		return;
+	unsigned char buf[sizeof(MCMSG_TurretWeaponFireUpdate) + MAX_MULTIPLAYER_TURRETS * (2 + MAX_TURRET_WEAPONFIRE_CHUNKS * sizeof(unsigned long))];
+	MCMSG_TurretWeaponFireUpdate* msg = (MCMSG_TurretWeaponFireUpdate*)buf;
+	msg->init();
+	unsigned char* p = msg->data;
+	long count = 0;
+	for (long i = 0; i < numTurrets; i++) {
+		TurretPtr t = turretRoster[i];
+		if (!t || t->getNumWeaponFireChunks(CHUNK_SEND) <= 0) continue;
+		unsigned long chunks[MAX_TURRET_WEAPONFIRE_CHUNKS];
+		long n = t->grabWeaponFireChunks(CHUNK_SEND, chunks);
+		if (n <= 0) continue;
+		*p++ = (unsigned char)i;
+		*p++ = (unsigned char)n;
+		memcpy(p, chunks, n * sizeof(unsigned long));
+		p += n * sizeof(unsigned long);
+		count++;
+	}
+	if (!count)
+		return;
+	msg->numTurrets = (char)count;
+	sendMessage(NULL, msg, (int)(p - buf), true /*GUARANTEED*/, false);
 }
 
 //---------------------------------------------------------------------------
@@ -1605,7 +1831,23 @@ void MultiPlayer::sendWeaponHitUpdate (void) {
 //---------------------------------------------------------------------------
 
 void MultiPlayer::sendWorldUpdate (void) {
-
+	if (!iAmHost || !inSession || mode != MULTIPLAYER_MODE_MISSION)
+		return;
+	const long kBatch = 48;
+	long sent = 0;
+	while (sent < numWorldChunks) {
+		unsigned char buf[sizeof(MCMSG_WorldUpdate) + kBatch * sizeof(MpWorldEntry)];
+		MCMSG_WorldUpdate* msg = (MCMSG_WorldUpdate*)buf;
+		msg->init();
+		long n = numWorldChunks - sent;
+		if (n > kBatch) n = kBatch;
+		memcpy(msg->entry, &worldChunks[sent], n * sizeof(MpWorldEntry));
+		msg->numWorldChanges = (unsigned char)n;
+		sendMessage(NULL, msg, (int)(sizeof(MCMSG_WorldUpdate) + n * sizeof(MpWorldEntry)), true /*GUARANTEED*/, false);
+		sent += n;
+	}
+	if (sent && getenv("MC2_LOG")) printf("[MP] world updates sent=%ld\n", sent);
+	numWorldChunks = 0;
 }
 
 //---------------------------------------------------------------------------
@@ -1858,7 +2100,18 @@ void MultiPlayer::handleEndMission (NETPLAYER sender, MCMSG_EndMission* msg) {
 //---------------------------------------------------------------------------
 
 void MultiPlayer::handleReinforcement (NETPLAYER sender, MCMSG_Reinforcement* msg) {
-
+	if (mode != MULTIPLAYER_MODE_MISSION || !mission)
+		return;
+	if (iAmHost) {
+		if (findPlayer(sender) < 0)
+			return;
+		applyReinforcement(msg, true);
+		for (long i = 0; i < MAX_MC_PLAYERS; i++)	// forward to everyone but the origin
+			if (playerInfo[i].player && playerInfo[i].player != sender && playerInfo[i].player != myPlayer)
+				sendMessage(playerInfo[i].player, msg, sizeof(*msg), true /*GUARANTEED*/, false);
+		}
+	else if (sender == serverPlayer)
+		applyReinforcement(msg, true);
 }
 
 //-----------------------------------------------------------------------------
@@ -1896,7 +2149,30 @@ void MultiPlayer::handleLeaveSession (NETPLAYER sender, MCMSG_LeaveSession* msg)
 //-----------------------------------------------------------------------------
 
 void MultiPlayer::handleHoldPosition (NETPLAYER sender, MCMSG_HoldPosition* msg) {
-
+	if (!iAmHost)
+		return;
+	long cid = findPlayer(sender);
+	if (cid < 0 || cid != msg->commanderID || mode != MULTIPLAYER_MODE_MISSION || !mission)
+		return;
+	for (long i = 0; i < msg->numMovers && i < MAX_LOCAL_MOVERS; i++) {
+		long idx = msg->moverIndex[i];
+		MoverPtr m = (idx < MAX_MULTIPLAYER_MOVERS) ? moverRoster[idx] : NULL;
+		if (!m || m->getCommanderId() != cid || m->isDestroyed() || !m->getPilot())
+			continue;
+		TacticalOrderPtr order = m->getPilot()->getCurTacOrder();
+		if (order->code == TACTICAL_ORDER_NONE)
+			continue;
+		// Same edit ControlGui makes locally for the host's own lance.
+		order->attackParams.range = (FireRangeType)msg->attackRange[i];
+		if (order->attackParams.range == FIRERANGE_CURRENT)
+			order->attackParams.pursue = false;
+		else if (msg->fireFromCurrentPos)
+			order->attackParams.pursue = false;
+		else
+			order->attackParams.pursue = true;
+		order->pack(NULL, NULL);
+		m->handleTacticalOrder(*order);
+	}
 }
 
 //-----------------------------------------------------------------------------
@@ -1936,7 +2212,14 @@ void MultiPlayer::handlePlayerMoverGroup (NETPLAYER sender, MCMSG_PlayerMoverGro
 //---------------------------------------------------------------------------
 
 void MultiPlayer::handlePlayerArtillery (NETPLAYER sender, MCMSG_PlayerArtillery* msg) {
-
+	if (!iAmHost)
+		return;
+	long cid = findPlayer(sender);
+	if (cid < 0 || mode != MULTIPLAYER_MODE_MISSION || !mission)
+		return;
+	Stuff::Vector3D loc(msg->location[0], msg->location[1], msg->location[2]);
+	// The host's CallArtillery queues the world entry, so every client (the caller included) gets the strike.
+	CallArtillery(cid, (long)(msg->chunk & 0xff), loc, (long)((msg->chunk >> 8) & 0xffff), false);
 }
 
 //---------------------------------------------------------------------------
@@ -1974,7 +2257,21 @@ void MultiPlayer::handleMoverUpdate (NETPLAYER sender, MCMSG_MoverUpdate* msg) {
 //---------------------------------------------------------------------------
 
 void MultiPlayer::handleTurretUpdate (NETPLAYER sender, MCMSG_TurretUpdate* msg) {
-
+	if (iAmHost || sender != serverPlayer)
+		return;
+	if (mode != MULTIPLAYER_MODE_MISSION || !mission || !ObjectManager)
+		return;
+	static unsigned short s_last = 0; static bool s_have = false;
+	if (s_have && (short)(msg->updateId - s_last) <= 0)
+		return;
+	s_last = msg->updateId; s_have = true;
+	for (long i = 0; i < numTurrets; i++) {
+		TurretPtr t = turretRoster[i];
+		if (!t) continue;
+		long idx = msg->targetList[i];
+		MoverPtr target = (idx >= 0 && idx < MAX_MULTIPLAYER_MOVERS) ? moverRoster[idx] : NULL;
+		t->targetWID = target ? target->getWatchID() : 0;	// client turrets only aim; the host relays the fire
+	}
 }
 
 //---------------------------------------------------------------------------
@@ -2004,7 +2301,24 @@ void MultiPlayer::handleMoverWeaponFireUpdate (NETPLAYER sender, MCMSG_MoverWeap
 //---------------------------------------------------------------------------
 
 void MultiPlayer::handleTurretWeaponFireUpdate (NETPLAYER sender, MCMSG_TurretWeaponFireUpdate* msg) {
-
+	if (iAmHost || sender != serverPlayer)
+		return;
+	if (mode != MULTIPLAYER_MODE_MISSION || !mission || !ObjectManager)
+		return;
+	const unsigned char* p = msg->data;
+	for (long k = 0; k < msg->numTurrets; k++) {
+		long idx = *p++;
+		long n = *p++;
+		if (n > MAX_TURRET_WEAPONFIRE_CHUNKS) return;	// malformed
+		unsigned long chunks[MAX_TURRET_WEAPONFIRE_CHUNKS];
+		memcpy(chunks, p, n * sizeof(unsigned long));
+		p += n * sizeof(unsigned long);
+		TurretPtr t = (idx < numTurrets) ? turretRoster[idx] : NULL;
+		if (!t) continue;
+		if (t->getNumWeaponFireChunks(CHUNK_RECEIVE) + n >= MAX_TURRET_WEAPONFIRE_CHUNKS)
+			t->clearWeaponFireChunks(CHUNK_RECEIVE);
+		t->addWeaponFireChunks(CHUNK_RECEIVE, chunks, n);
+	}
 }
 
 //---------------------------------------------------------------------------
@@ -2073,7 +2387,13 @@ void MultiPlayer::handleWeaponHitUpdate (NETPLAYER sender, MCMSG_WeaponHitUpdate
 //---------------------------------------------------------------------------
 
 void MultiPlayer::handleWorldUpdate (NETPLAYER sender, MCMSG_WorldUpdate* msg) {
-
+	if (iAmHost || sender != serverPlayer)
+		return;
+	if (mode != MULTIPLAYER_MODE_MISSION || !mission || !ObjectManager)
+		return;	// late packet after Mission::destroy
+	for (long i = 0; i < msg->numWorldChanges; i++)
+		applyWorldEntry(msg->entry[i]);
+	if (getenv("MC2_LOG")) printf("[MP] world updates applied=%d\n", (int)msg->numWorldChanges);
 }
 
 //---------------------------------------------------------------------------
@@ -2187,6 +2507,32 @@ void MultiPlayer::processMessages (void) {
 			case MCMSG_LEAVE_SESSION:
 				if (m.bytes.size() >= sizeof(MCMSG_LeaveSession))
 					handleLeaveSession(m.sender, (MCMSG_LeaveSession*)raw);
+				break;
+			case MCMSG_HOLD_POSITION:
+				if (m.bytes.size() >= sizeof(MCMSG_HoldPosition))
+					handleHoldPosition(m.sender, (MCMSG_HoldPosition*)raw);
+				break;
+			case MCMSG_PLAYER_ARTILLERY:
+				if (m.bytes.size() >= sizeof(MCMSG_PlayerArtillery))
+					handlePlayerArtillery(m.sender, (MCMSG_PlayerArtillery*)raw);
+				break;
+			case MCMSG_TURRET_UPDATE:
+				if (m.bytes.size() >= sizeof(MCMSG_TurretUpdate))
+					handleTurretUpdate(m.sender, (MCMSG_TurretUpdate*)raw);
+				break;
+			case MCMSG_TURRET_WEAPONFIRE_UPDATE:
+				if (m.bytes.size() >= sizeof(MCMSG_TurretWeaponFireUpdate))
+					handleTurretWeaponFireUpdate(m.sender, (MCMSG_TurretWeaponFireUpdate*)raw);
+				break;
+			case MCMSG_WORLD_UPDATE: {
+				MCMSG_WorldUpdate* wu = (MCMSG_WorldUpdate*)raw;
+				if (m.bytes.size() >= sizeof(MCMSG_WorldUpdate) + wu->numWorldChanges * sizeof(MpWorldEntry))
+					handleWorldUpdate(m.sender, wu);
+				break;
+			}
+			case MCMSG_REINFORCEMENT:
+				if (m.bytes.size() >= sizeof(MCMSG_Reinforcement))
+					handleReinforcement(m.sender, (MCMSG_Reinforcement*)raw);
 				break;
 			default:
 				if (getenv("MC2_LOG"))
@@ -2389,6 +2735,7 @@ void MultiPlayer::initStartupParameters (bool fresh) {
 	memset(mechData, 0, sizeof(mechData));
 	numMovers = numLocalMovers = numTurrets = 0;
 	numWeaponHitChunks = 0;
+	numWorldChunks = 0;
 	s_hitsSent = s_hitsApplied = s_fireChunksSent = s_fireChunksReceived = 0;
 	memset(s_lastSentValidChunk, 0, sizeof(s_lastSentValidChunk));
 	s_moverUpdateId = 0; s_lastMoverUpdateId = 0; s_haveMoverUpdate = false;
