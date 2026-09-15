@@ -163,6 +163,8 @@ void MPTransport::poll(void* user, RecvFn onRecv, PeerFn onPeer, int timeoutMs)
 		switch (ev.type)
 		{
 			case ENET_EVENT_TYPE_CONNECT:
+				// Spec MP-3 wants a drop noticed fast (ENet default: ~40 s measured); 5/10 s still tolerates an 8 GB box paging.
+				enet_peer_timeout(ev.peer, 0, 5000, 10000);
 				if (!hosting && ev.peer == pendingPeer)
 				{
 					serverPeer = ev.peer;

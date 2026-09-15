@@ -439,6 +439,7 @@ long Logistics::update (void)
 
 				if ( MPlayer->hostLeft || MPlayer->commanderID < 0 )
 				{
+					if (getenv("MC2_LOG")) { printf("[MP] host gone: back to main menu\n"); fflush(stdout); }
 					missionBegin->beginSplash( NULL );
 					MPlayer->closeSession();
 				}

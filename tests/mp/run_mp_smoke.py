@@ -45,12 +45,13 @@ def main():
     ap.add_argument("--no-launch", action="store_true", help="stop after the lobby checks")
     ap.add_argument("--play", type=int, default=150, help="seconds to keep both in-mission after start")
     ap.add_argument("--orders", default="1", help="MC2_MP_SCRIPT_ORDERS for the client: 1=attack, move=move-only, capture=capture nearest building, move when none left")
+    ap.add_argument("--drop", choices=["client", "host"], help="kill that side 40 s into the mission and check the other copes")
     ap.add_argument("--rematch", action="store_true", help="after the match ends, expect both to re-enter the lobby, re-ready, relaunch and load a second mission")
     a = ap.parse_args()
     logdir = os.path.join(REPO, "tests", "mp", "logs"); os.makedirs(logdir, exist_ok=True)
 
     henv = {"MC2_MP_AUTOHOST": "1", "MC2_MP_AUTOTEST": "1", "MC2_MP_PORT": str(a.port), "MC2_MP_SESSION": "smoke"}
-    if a.rematch:
+    if a.rematch or a.drop:
         henv["MC2_MP_AUTORESULTS"] = "1"; os.environ["MC2_MP_AUTORESULTS"] = "1"
     if not a.no_launch:
         henv["MC2_MP_AUTOLAUNCH"] = "2"
@@ -100,7 +101,36 @@ def main():
                 checks.append(("roster+seed identical", bool(same), f"host={hh.groups() if hh else None} client={ch.groups() if ch else None}"))
                 print(f"[mp-smoke] {'PASS' if same else 'FAIL'} roster+seed identical: host={hh.groups() if hh else None} client={ch.groups() if ch else None}", flush=True)
                 ok = bool(same)
-            if ok:
+            if ok and a.drop:
+                # Drop-out test: kill one side hard 40 s in, then judge the survivor from its log.
+                time.sleep(40)
+                victim, survivor, slog = (client, host, hlog) if a.drop == "client" else (host, client, clog)
+                os.killpg(os.getpgid(victim.pid), signal.SIGKILL); victim.wait(timeout=10); procs.remove(victim)
+                t_kill = time.time()
+                print(f"[mp-smoke] killed {a.drop} at mission t+40s", flush=True)
+                def within(name, path, pat, secs):
+                    r = wait_for(path, pat, t_kill + secs, procs)
+                    good = r is not None and not str(r).startswith("process exited")
+                    print(f"[mp-smoke] {'PASS' if good else 'FAIL'} {name} (within {secs}s): {r}", flush=True)
+                    return good
+                if a.drop == "client":
+                    ok = within("host: noticed the drop", hlog, r"\[MP\] peer .* left", 20)
+                    time.sleep(45)
+                    alive = host.poll() is None
+                    pos = [float(re.search(r"t=([0-9.]+)", l).group(1)) for l in open(hlog, errors="replace") if "[MP_POS]" in l]
+                    ticking = alive and pos and pos[-1] > 80.0
+                    print(f"[mp-smoke] {'PASS' if ticking else 'FAIL'} host: still running the match 45 s after the drop (alive={alive}, last t={pos[-1] if pos else None})", flush=True)
+                    over = [l.strip() for l in open(hlog, errors="replace") if "[MP] mission over" in l]
+                    print(f"[mp-smoke] INFO host mission over: {over[:1]}", flush=True)
+                    ok = ok and ticking
+                else:
+                    ok = (within("client: noticed the drop", clog, r"\[MP\] host connection lost", 30)
+                          and within("client: ended the mission", clog, r"\[MP\] host gone: ending mission", 35)
+                          and within("client: back at the main menu", clog, r"\[MP\] host gone: back to main menu", 90))
+                    alive = client.poll() is None
+                    print(f"[mp-smoke] {'PASS' if alive else 'FAIL'} client: still running", flush=True)
+                    ok = ok and alive
+            elif ok:
                 # Play until both sides report the match over (Elimination), or --play seconds.
                 t_play = time.time(); over_h = over_c = None
                 while time.time() - t_play < a.play:
@@ -174,7 +204,9 @@ def main():
                 end_ok = (not ended) or (len(ended) == 2 and len(winners) == 1 and min(times) > 20.0)
                 print(f"[mp-smoke] {'PASS' if end_ok else 'FAIL'} mission end consistent: {ended[:2]}", flush=True)
                 ok = ok and alive and end_ok
-        if a.orders == "capture":
+        if a.drop:
+            pass    # drop runs are judged above
+        elif a.orders == "capture":
             # Captures: every [MP_CAP] the host queued must be applied on the client, and the
             # resource-point totals per commander must end up identical on both sides.
             def caps(path): return [l.strip().split("] ",1)[1] for l in open(path, errors="replace") if "[MP_CAP]" in l]

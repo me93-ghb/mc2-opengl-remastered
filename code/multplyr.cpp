@@ -164,7 +164,14 @@ namespace {
 				if (getenv("MC2_LOG")) printf("[MP] peer %p joined -> commanderID %ld\n", peer, cid);
 			} else {
 				long cid = mp->findPlayer((NETPLAYER)peer);
-				if (cid >= 0) {
+				if (cid >= 0 && mp->mode == MULTIPLAYER_MODE_MISSION) {
+					// Mid-match drop: keep team and roster so the lance stays in play under host AI
+					// and calcMissionStatus can still eliminate it; the slot is wiped at Mission::destroy.
+					mp->playerInfo[cid].player = NULL;
+					mp->playerInfo[cid].leftSession = true;
+					mp->playerList[cid].player = NULL;
+				}
+				else if (cid >= 0) {
 					// Free the whole slot; a rejoin into it must start clean (checkedIn etc.).
 					memset(&mp->playerInfo[cid], 0, sizeof(MC2Player));
 					mp->playerInfo[cid].commanderID = -1;
@@ -851,8 +858,14 @@ void MultiPlayer::resetForNewGame (void) {
 	memset(missionFullySetup, 0, sizeof(missionFullySetup));
 	memset(allUnitsDestroyed, 0, sizeof(allUnitsDestroyed));
 	memset(mechData, 0, sizeof(mechData));
-	for (long i = 0; i < MAX_MC_PLAYERS; i++)
+	for (long i = 0; i < MAX_MC_PLAYERS; i++) {
 		playerInfo[i].ready = false;
+		if (!playerInfo[i].player && playerInfo[i].leftSession) {	// dropped mid-match: free the slot now
+			memset(&playerInfo[i], 0, sizeof(MC2Player));
+			playerInfo[i].commanderID = -1;
+			playerList[i].commanderID = -1;
+		}
+	}
 	inProgress = false;
 	missionSettings.inProgress = false;
 	if (mode == MULTIPLAYER_MODE_MISSION)
@@ -2577,8 +2590,8 @@ bool MultiPlayer::calcMissionStatus (void) {
 	memset(teamAlive, 0, sizeof(teamAlive));
 	long teamsInPlay = 0;
 	for (long cid = 0; cid < MAX_MC_PLAYERS; cid++) {
-		if (!playerInfo[cid].player || playerInfo[cid].leftSession)
-			continue;
+		if (!playerInfo[cid].player && !playerInfo[cid].leftSession)
+			continue;	// a dropped player's lance still counts until it is eliminated
 		long alive = 0, total = 0;
 		for (long i = 0; i < MAX_LOCAL_MOVERS; i++) {
 			MoverPtr m = playerMoverRoster[cid][i];

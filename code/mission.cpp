@@ -1029,7 +1029,15 @@ long Mission::update (void)
 			{
 				if (MPlayer) 
 				{
-					if (MPlayer->calcMissionStatus()) 
+					if (!MPlayer->isServer() && MPlayer->hostLeft && !terminationCounterStarted)
+					{
+						// Spec MP-3: host dropped, back to the front end within 5 s.
+						if (getenv("MC2_LOG")) { printf("[MP] host gone: ending mission t=%.1f\n", actualTime); fflush(stdout); }
+						terminationCounterStarted = true;
+						missionTerminationTime = actualTime + 1.0;
+						terminationResult = mis_PLAYER_LOST_BIG;
+					}
+					else if (MPlayer->calcMissionStatus()) 
 					{
 						terminationCounterStarted = true;
 						missionTerminationTime = actualTime + 5.0/*seconds*/;
