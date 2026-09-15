@@ -199,10 +199,11 @@ namespace {
 	NETPLAYER remotePlayerHandle (long cid) {	// non-NULL 'slot occupied' marker on clients
 		return (NETPLAYER)(uintptr_t)(0x1000 + cid);
 	}
-	// Direct-connect target: MC2_MP_CONNECT=host[:port], or the MC2_MP_AUTOJOIN harness hook.
+	// Direct-connect target: the browser's host:port field (MP-5) or MC2_MP_CONNECT=host[:port].
+	char s_directAddr[128] = "";
 	const char* mpConnectAddr (void) {
+		if (s_directAddr[0]) return s_directAddr;
 		const char* a = getenv("MC2_MP_CONNECT");
-		if (!a || !a[0]) a = getenv("MC2_MP_AUTOJOIN");
 		return (a && a[0]) ? a : NULL;
 	}
 	// MCMSG_MissionSetup.subType (retail values unknown; ours). Host -> clients unless noted.
@@ -547,6 +548,12 @@ long MultiPlayer::endSessionScan (void) {
 }
 
 //---------------------------------------------------------------------------
+
+void MultiPlayer::setDirectAddress (const char* hostPort) {
+	strncpy(s_directAddr, hostPort ? hostPort : "", sizeof(s_directAddr) - 1);
+	s_directAddr[sizeof(s_directAddr) - 1] = 0;
+	if (getenv("MC2_LOG")) printf("[MP] direct address set: '%s'\n", s_directAddr);
+}
 
 MC2Session* MultiPlayer::getSessions (long& sessionCount) {
 

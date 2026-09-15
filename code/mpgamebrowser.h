@@ -15,6 +15,7 @@ MPGameBrowser.h			: Interface for the MPGameBrowser component.
 
 #include"asystem.h"
 #include"alistbox.h"
+#include"aedit.h"
 #include"attributemeter.h"
 #include"simplecamera.h"
 
@@ -98,6 +99,8 @@ private:
 	int indexOfButtonWithID(int id);
 
 	aListBox				gameList;
+	aEdit					addressEdit;		// MP-5: host[:port] to direct-connect to
+	EString					lastAddress;
 	aGameListItem			items[256];
 	aGameListItem			templateItem;
 

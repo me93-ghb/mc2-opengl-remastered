@@ -1517,6 +1517,7 @@ class MultiPlayer {
 		}
 
 		MC2Session* getSessions (long& sessionCount);
+		void setDirectAddress (const char* hostPort);	// MP-5: browser host:port field
 
 		// for read purposes
 		const MC2Player* getPlayers (long& playerCount);

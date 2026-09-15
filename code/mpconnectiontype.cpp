@@ -203,6 +203,7 @@ void MPConnectionType::begin()
 	}
 	else if ( MPlayer && getenv("MC2_MP_AUTOJOIN") )
 	{
+		MPlayer->setDirectAddress( getenv("MC2_MP_AUTOJOIN") );
 		long sessionCount = 0;
 		MC2Session* pSessions = MPlayer->getSessions( sessionCount );
 		if ( sessionCount && MPLAYER_NO_ERR == MPlayer->joinSession( &pSessions[0], &prefs.playerName[0][0] ) )

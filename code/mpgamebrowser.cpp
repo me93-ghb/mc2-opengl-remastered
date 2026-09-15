@@ -118,6 +118,16 @@ void MPGameBrowser::init(FitIniFile* file)
 
 
 	hostDlg.init();
+	// MP-5: host:port entry under the game list. No layout block exists for it in the
+	// screen's .fit, so it is placed from the list rect and borrows the first text font.
+	if ( textCount > 0 )
+		addressEdit.setFont( textObjects[0].font.getFontID() );
+	addressEdit.setTextColor( 0xffffffff );
+	addressEdit.setBufferSize( 128 );
+	addressEdit.limitEntry( 64 );
+	addressEdit.allowIME( 0 );
+	addressEdit.resize( rects[0].width() < 320 ? rects[0].width() : 320, 20 );
+	addressEdit.moveTo( rects[0].left(), rects[0].bottom() + 4 );
 }
 
 void MPGameBrowser::begin()
@@ -134,7 +144,10 @@ void MPGameBrowser::begin()
 		MPlayer->beginSessionScan (NULL);
 		MPlayer->setMode(MULTIPLAYER_MODE_BROWSER);
 	}
-
+	// Seed the field from the environment so a CLI-provided address is visible and editable.
+	const char* seed = getenv("MC2_MP_CONNECT");
+	lastAddress = seed ? seed : "";
+	addressEdit.setEntry( lastAddress );
 }
 
 
@@ -151,6 +164,7 @@ void MPGameBrowser::render(int xOffset, int yOffset )
 	if ((0 == xOffset) && (0 == yOffset))
 	{
 		gameList.render();
+		addressEdit.render();
 	}
 
 	LogisticsScreen::render(xOffset, yOffset);
@@ -324,6 +338,16 @@ void MPGameBrowser::update()
 	}
 
 	LogisticsScreen::update();
+	addressEdit.update();
+	{
+		EString addr;
+		addressEdit.getEntry( addr );
+		if ( MPlayer && !(addr == lastAddress) )
+		{
+			lastAddress = addr;
+			MPlayer->setDirectAddress( (const char*)addr );
+		}
+	}
 	gameList.update();
 	float oldScrollPos = gameList.getScrollPos();
 

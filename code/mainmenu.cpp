@@ -499,9 +499,11 @@ void MainMenu::update()
 	else
 		getButton( MM_MSG_SAVE )->disable( false );
 
-	// MP-ENET-1: the DirectPlay transport is stubbed in the released source, so the
-	// button stays disabled by default. MC2_MP_ENABLE=1 opens it for the ENet prototype.
-	getButton( MM_MSG_MULTIPLAYER )->disable( std::getenv("MC2_MP_ENABLE") == nullptr );
+	// MP-4: multiplayer over ENet is on by default (MACOS-PORT-32..37); MC2_MP_ENABLE=0 hides it.
+	{
+		const char* mpEnable = std::getenv("MC2_MP_ENABLE");
+		getButton( MM_MSG_MULTIPLAYER )->disable( mpEnable && mpEnable[0] == '0' );
+	}
 
 	// macos-port: MC2_SKIP_INTRO=1 skips only the intro MOVIE (msft), then lets
 	// the splash-screen sequence play normally: the non-looping intro-layout
