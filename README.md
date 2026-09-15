@@ -32,12 +32,28 @@ Output lands at `build64/RelWithDebInfo/mc2.exe`.
 
 For detailed build and dependency information, see [BUILD-WIN.md](BUILD-WIN.md).
 
+### macOS (Apple Silicon)
+
+The `macos-port` branch builds and runs natively on M1 and later Macs, with GL routed through Mesa Zink and kosmickrisp onto Metal. Everything comes from Homebrew; no `3rdparty.zip` needed:
+
+```bash
+brew install cmake git-lfs mesa molten-vk vulkan-loader sdl2 sdl2_mixer sdl2_ttf glew ffmpeg
+cmake -S . -B build-mac -DCMAKE_PREFIX_PATH=/opt/homebrew -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build-mac --target mc2 mc2_glshim -j8
+dev/macos-setup-data.sh          # builds game data from alariq/mc2srcdata into run/
+cd run && MC2_MACOS_WINDOW=1 ../dev/macos-run.sh
+```
+
+See [BUILD-MAC.md](BUILD-MAC.md) for the details and what is not available on macOS yet (editor, launcher, campaign import).
+
 ## Running
 
 ```bash
 mc2.exe                     # normal gameplay
 mc2.exe -mission mc2_01     # skip menus, load directly into a mission
 ```
+
+On macOS use `dev/macos-run.sh` from inside `run/` in place of `mc2.exe`; it takes the same arguments.
 
 ## License
 
