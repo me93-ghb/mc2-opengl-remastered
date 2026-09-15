@@ -1426,6 +1426,7 @@ class MultiPlayer {
 		MpWorldEntry		worldChunks[MAX_WORLD_CHUNKS];
 		unsigned long		serverOrder[MAX_MC_PLAYERS];
 		long				reinforcements[MAX_MC_PLAYERS][2];	// index 0 = current reinforcement, index 1 = current recoverery
+		bool				rosterReserved[MAX_MULTIPLAYER_MOVERS];	// host: slots promised to VTOL drops still in the air
 		char				reinforcementPilot[MAX_MC_PLAYERS][32];
 		
 		bool				isMPlayerGame;
@@ -1613,7 +1614,8 @@ class MultiPlayer {
 
 		void removeFromLocalMovers (MoverPtr mover);
 
-		void addToMoverRoster (MoverPtr mover);
+		void addToMoverRoster (MoverPtr mover, long index = -1);	// index: slot the host assigned (reinforcements)
+		void requestReinforcement (long vehicleID, Stuff::Vector3D pos);	// stage 0: ask the host for a VTOL drop
 
 		bool canAddToMoverRoster (void)
 		{
@@ -1627,6 +1629,7 @@ class MultiPlayer {
 		void applyWorldEntry (const MpWorldEntry& e);
 		void applyKillLoss (long killerCID, long loserCID);
 		void applyReinforcement (MCMSG_Reinforcement* msg, bool fromNetwork);
+		void assignReinforcementSlot (MCMSG_Reinforcement* msg);
 
 		void addToPlayerMoverRoster (long playerCommanderID, MoverPtr mover);
 

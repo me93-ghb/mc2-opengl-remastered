@@ -333,6 +333,7 @@ public:
 		void	doGuard(GameObject* pObj);
 		int toggleHotKeys();
 		void	beginVtol(long supportID, long commanderID = 0, Stuff::Vector3D* reinforcePos = NULL, MoverPtr salvageTarget = NULL);
+		void	completeRecovery( long vtolNum );		// Karnov finished over mechToRecover[vtolNum]
 
 		//Tutorial Stuff goes here.
 		bool startAnimation(long buttonId,bool isButton,bool isPressed,float timeToScroll,long numFlashes);

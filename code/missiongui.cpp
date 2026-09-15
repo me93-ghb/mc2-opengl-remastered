@@ -1778,34 +1778,8 @@ void MissionInterfaceManager::updateVTol()
 								doIt = false;
 						}
 						
-						if (doIt && !mechToRecover[vtolNum]->isDestroyed())
-						{
-							//Seems like we don't want to do this on every machine, do we?
-							// -fs
-
-							//STAY in recover until its done.  I know it shouldn't be possible but trust me, its happening.
-							while (((MoverPtr)mechToRecover[vtolNum])->recover() == false)
-								;
-
-							if (mechToRecover[vtolNum]->isDisabled())
-							{
-								mechToRecover[vtolNum]->setStatus(OBJECT_STATUS_SHUTDOWN,true);
-								mechToRecover[vtolNum]->getSensorSystem()->broken = false;
-								((MoverPtr)mechToRecover[vtolNum])->timeLeft = 1.0f;
-								((MoverPtr)mechToRecover[vtolNum])->exploding = false;
-							}
-							char* newPilotName = NULL;
-							if (MPlayer)
-								newPilotName = MPlayer->reinforcementPilot[vtolNum];
-							else
-								newPilotName = (char*)LogisticsData::instance->getBestPilot( mechToRecover[vtolNum]->tonnage );
-
-							mission->tradeMover(mechToRecover[vtolNum], Commander::commanders[vtolNum]->getTeam()->getId(), vtolNum, newPilotName, "pbrain");
-							mechRecovered[vtolNum] = true;
-							mechToRecover[vtolNum]->getPilot()->orderPowerUp(true, ORDER_ORIGIN_SELF);
-							if (MPlayer)
-								MPlayer->reinforcements[vtolNum][1] = -1;
-						}
+						if (doIt)
+							completeRecovery(vtolNum);	// other machines run it when the owner's stage-5 message arrives
 					}
 				}
 				else if ((vTol[vtolNum]->getCurrentGestureId() == 0) && (mechRecovered[vtolNum] || mechToRecover[vtolNum]->isDestroyed()) && (!vTol[vtolNum]->getInTransition()))
@@ -5635,6 +5609,38 @@ MoverPtr BringInReinforcement (long vehicleID, long rosterIndex, long commanderI
 }
 
 //-----------------------------------------------------------------------------
+
+// Karnov done: repair, re-crew and power up the recovered mech for that commander.
+// Called from updateVTol on the machine that owns the Karnov and, in multiplayer, from
+// MultiPlayer::applyReinforcement (stage 5) on every other machine.
+void MissionInterfaceManager::completeRecovery( long vtolNum )
+{
+	if ( vtolNum < 0 || vtolNum >= MAX_TEAMS || !mechToRecover[vtolNum] || mechToRecover[vtolNum]->isDestroyed() )
+		return;
+	//STAY in recover until its done.  I know it shouldn't be possible but trust me, its happening.
+	while (((MoverPtr)mechToRecover[vtolNum])->recover() == false)
+		;
+	if (mechToRecover[vtolNum]->isDisabled())
+	{
+		mechToRecover[vtolNum]->setStatus(OBJECT_STATUS_SHUTDOWN,true);
+		mechToRecover[vtolNum]->getSensorSystem()->broken = false;
+		((MoverPtr)mechToRecover[vtolNum])->timeLeft = 1.0f;
+		((MoverPtr)mechToRecover[vtolNum])->exploding = false;
+	}
+	char* newPilotName = NULL;
+	if (MPlayer)
+		newPilotName = MPlayer->reinforcementPilot[vtolNum];
+	else
+		newPilotName = (char*)LogisticsData::instance->getBestPilot( mechToRecover[vtolNum]->tonnage );
+	mission->tradeMover(mechToRecover[vtolNum], Commander::commanders[vtolNum]->getTeam()->getId(), vtolNum, newPilotName, "pbrain");
+	mechRecovered[vtolNum] = true;
+	mechToRecover[vtolNum]->getPilot()->orderPowerUp(true, ORDER_ORIGIN_SELF);
+	if (MPlayer)
+	{
+		if (getenv("MC2_LOG")) { printf("[MP_KARNOV] recovered cid=%ld idx=%ld pilot=%s alive=%d\n", vtolNum, mechToRecover[vtolNum]->getNetRosterIndex(), newPilotName ? newPilotName : "", mechToRecover[vtolNum]->getPilot()->alive() ? 1 : 0); fflush(stdout); }
+		MPlayer->reinforcements[vtolNum][1] = -1;
+	}
+}
 
 void MissionInterfaceManager::addVehicle( const Stuff::Vector3D& pos )
 {

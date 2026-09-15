@@ -1978,7 +1978,7 @@ typedef struct _MoverInitData {
 			//parts[i].object->setIdNumber(i);
 
 			if (MPlayer) {
-				MPlayer->addToMoverRoster(mover);
+				MPlayer->addToMoverRoster(mover, (moverSpec->rosterIndex == 255) ? -1 : (long)moverSpec->rosterIndex);
 				MPlayer->addToPlayerMoverRoster(moverSpec->commanderID, mover);
 				if (moverSpec->commanderID == MPlayer->commanderID)
 					MPlayer->addToLocalMovers(mover);

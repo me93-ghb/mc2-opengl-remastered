@@ -109,6 +109,7 @@
 // MP-ENET-1: cross-platform UDP transport behind the stubbed DirectPlay seam.
 #include"mptransport.h"
 #include"contact.h"
+#include"gvehicl.h"
 #include"weaponfx.h"	// MINE_EXPLOSION_ID
 #include"dbldng.h"	// GENERIC_HQ_BUILDING_OBJNUM
 #include<stdlib.h>
@@ -784,9 +785,9 @@ void MultiPlayer::missionDiagnostics (void) {
 				if (!m || m->isDestroyed() || !m->getPilot()) continue;
 				int cl[MAX_CONTACTS_PER_SENSOR];
 				GameObjectPtr tgt = m->getPilot()->getLastTarget();
-				printf("[MP_TGT] t=%.0f cid=%ld idx=%ld ctl=%d tgt=%ld order=%d enemiesVisible=%ld\n", mission->actualTime, m->getCommanderId(), i,
+				printf("[MP_TGT] t=%.0f cid=%ld idx=%ld ctl=%d tgt=%ld order=%d enemiesVisible=%ld dis=%d\n", mission->actualTime, m->getCommanderId(), i,
 					(int)m->control.getType(), tgt ? (long)tgt->getWatchID() : 0L, (int)m->getPilot()->getCurTacOrder()->code,
-					m->getContacts(cl, CONTACT_CRITERIA_ENEMY | CONTACT_CRITERIA_VISUAL, CONTACT_SORT_NONE));
+					m->getContacts(cl, CONTACT_CRITERIA_ENEMY | CONTACT_CRITERIA_VISUAL, CONTACT_SORT_NONE), m->isDisabled() ? 1 : 0);
 			}
 		}
 		fflush(stdout);
@@ -798,10 +799,71 @@ void MultiPlayer::missionDiagnostics (void) {
 			if (moverRoster[i] && moverRoster[i]->getCommanderId() != commanderID && !moverRoster[i]->isDestroyed())
 				enemy = moverRoster[i];
 		if (!enemy) return;
+		if (strcmp(getenv("MC2_MP_SCRIPT_ORDERS"), "recover") == 0) {
+			// Eject the second local pilot, then buy a Karnov recovery for the empty mech.
+			static bool s_ejected = false, s_requested = false;
+			const long kKarnovID = 147, kKarnovCost = 6000;
+			MoverPtr victim = (numLocalMovers > 1) ? localMovers[1] : NULL;
+			if (!s_ejected && victim && !victim->isDestroyed() && now - s_missionT0 > 15000) {
+				s_ejected = true;
+				TacticalOrder eject;
+				eject.init(ORDER_ORIGIN_PLAYER, TACTICAL_ORDER_EJECT, true);
+				eject.pack(NULL, NULL);
+				sendPlayerOrder(&eject, false, 1, &victim);
+				printf("[MP_KARNOV] eject sent idx=%ld\n", victim->getNetRosterIndex()); fflush(stdout);
+			}
+			else if (s_ejected && !s_requested && victim && victim->isDisabled() && !victim->isDestroyed()
+			         && playerInfo[commanderID].resourcePoints >= kKarnovCost) {
+				s_requested = true;
+				const char* pilot = LogisticsData::instance ? LogisticsData::instance->getBestPilot(victim->tonnage) : NULL;
+				if (!pilot) { printf("[MP_KARNOV] no pilot available\n"); fflush(stdout); }
+				else {
+					LogisticsData::instance->decrementResourcePoints((int)kKarnovCost);
+					sendReinforcement(-kKarnovCost, 0, "noname", commanderID, victim->getPosition(), 6);
+					sendReinforcement(kKarnovID, victim->getNetRosterIndex(), pilot, commanderID, victim->getPosition(), 3);
+					printf("[MP_KARNOV] request sent idx=%ld pilot=%s\n", victim->getNetRosterIndex(), pilot); fflush(stdout);
+				}
+			}
+		}
+		if (strcmp(getenv("MC2_MP_SCRIPT_ORDERS"), "vtol") == 0) {
+			static bool s_bought = false, s_struck = false;
+			const long kMinelayerID = 120, kMinelayerCost = 2000;
+			if (!s_bought && numLocalMovers > 0 && localMovers[0] && playerInfo[commanderID].resourcePoints >= kMinelayerCost) {
+				s_bought = true;
+				// Same three steps the vehicle button + map click make: pay, tell the host, ask for the drop.
+				if (LogisticsData::instance) LogisticsData::instance->decrementResourcePoints((int)kMinelayerCost);
+				Stuff::Vector3D dropPos = localMovers[0]->getPosition();
+				dropPos.x += 60.0f;
+				sendReinforcement(-kMinelayerCost, 0, "noname", commanderID, dropPos, 6);
+				requestReinforcement(kMinelayerID, dropPos);
+				printf("[MP_VTOL] purchase minelayer rp=%ld\n", playerInfo[commanderID].resourcePoints); fflush(stdout);
+			}
+			else if (s_bought && !s_struck && now - s_missionT0 > 50000) {
+				s_struck = true;
+				sendPlayerArtillery(ARTILLERY_LARGE, enemy->getPosition(), 5);
+				printf("[MP_ART] request\n"); fflush(stdout);
+			}
+		}
+		if (strcmp(getenv("MC2_MP_SCRIPT_ORDERS"), "recover") == 0)
+			return;	// nobody moves: the Karnov comes to the ejected mech, no fight needed
 		for (long i = 0; i < numLocalMovers; i++) {
 			MoverPtr m = localMovers[i];
 			if (!m || m->isDestroyed()) continue;
 			TacticalOrder tacOrder;
+			const bool vtolMode = (strcmp(getenv("MC2_MP_SCRIPT_ORDERS"), "vtol") == 0);
+			if (vtolMode && m->getObjectClass() == GROUNDVEHICLE && ((GroundVehiclePtr)m)->mineLayer) {
+				// The bought minelayer: lay mines on the way to the enemy.
+				tacOrder.init(ORDER_ORIGIN_PLAYER, TACTICAL_ORDER_MOVETO_POINT, false);
+				Stuff::Vector3D p = enemy->getPosition();
+				tacOrder.setWayPoint(0, p);
+				tacOrder.moveParams.wait = false;
+				tacOrder.moveParams.mode = MOVE_MODE_MINELAYING;
+				tacOrder.moveParams.wayPath.mode[0] = TRAVEL_MODE_SLOW;
+				tacOrder.pack(NULL, NULL);
+				sendPlayerOrder(&tacOrder, false, 1, &m);
+				printf("[MP_VTOL] minelayer ordered to lay mines\n"); fflush(stdout);
+				continue;
+			}
 			GameObjectPtr capTarget = NULL;
 			if (strcmp(getenv("MC2_MP_SCRIPT_ORDERS"), "capture") == 0) {
 				// Nearest building this lance can still capture (turret controls, resource buildings).
@@ -821,7 +883,7 @@ void MultiPlayer::missionDiagnostics (void) {
 				tacOrder.attackParams.pursue = true;
 				tacOrder.moveParams.wayPath.mode[0] = TRAVEL_MODE_FAST;
 				}
-			else if (strcmp(getenv("MC2_MP_SCRIPT_ORDERS"), "move") == 0 || strcmp(getenv("MC2_MP_SCRIPT_ORDERS"), "capture") == 0) {
+			else if (strcmp(getenv("MC2_MP_SCRIPT_ORDERS"), "move") == 0 || strcmp(getenv("MC2_MP_SCRIPT_ORDERS"), "capture") == 0 || vtolMode || strcmp(getenv("MC2_MP_SCRIPT_ORDERS"), "recover") == 0) {
 				// Plain move toward the enemy: exercises fire-at-will on both lances.
 				tacOrder.init(ORDER_ORIGIN_PLAYER, TACTICAL_ORDER_MOVETO_POINT, false);
 				Stuff::Vector3D p = enemy->getPosition();
@@ -852,6 +914,8 @@ void MultiPlayer::resetForNewGame (void) {
 	memset(playerMoverRoster, 0, sizeof(playerMoverRoster));
 	memset(localMovers, 0, sizeof(localMovers));
 	memset(turretRoster, 0, sizeof(turretRoster));
+	memset(rosterReserved, 0, sizeof(rosterReserved));
+	for (long i = 0; i < MAX_MC_PLAYERS; i++) reinforcements[i][0] = reinforcements[i][1] = -1;
 	numMovers = numLocalMovers = numTurrets = 0;
 	numWeaponHitChunks = 0;
 	numWorldChunks = 0;
@@ -1137,10 +1201,17 @@ void MultiPlayer::removeFromLocalMovers (MoverPtr mover) {
 
 //---------------------------------------------------------------------------
 
-void MultiPlayer::addToMoverRoster (MoverPtr mover) {
+void MultiPlayer::addToMoverRoster (MoverPtr mover, long index) {
 
+	if (index >= 0 && index < MAX_MULTIPLAYER_MOVERS && !moverRoster[index]) {
+		moverRoster[index] = mover;
+		mover->setNetRosterIndex(index);
+		rosterReserved[index] = false;
+		numMovers++;
+		return;
+	}
 	for (long i = 0; i < MAX_MULTIPLAYER_MOVERS; i++)
-		if (!moverRoster[i]) {
+		if (!moverRoster[i] && !rosterReserved[i]) {
 			moverRoster[i] = mover;
 			mover->setNetRosterIndex(i);
 			numMovers++;
@@ -1222,6 +1293,7 @@ void MultiPlayer::applyKillLoss (long killerCID, long loserCID) {
 void MultiPlayer::applyWorldEntry (const MpWorldEntry& e) {
 	switch (e.kind) {
 		case MP_WORLD_MINE: {
+			if (getenv("MC2_LOG")) printf("[MP_MINE] r=%d c=%d state=%d\n", e.a, e.b, e.c);
 			GameMap->setMine(e.a, e.b, (unsigned long)e.c);
 			if (e.d == 2) {	// mine went off: effect only, the host relays the damage as weapon hits
 				Stuff::Vector3D p;
@@ -1238,6 +1310,7 @@ void MultiPlayer::applyWorldEntry (const MpWorldEntry& e) {
 		}
 		case MP_WORLD_ARTILLERY: {
 			Stuff::Vector3D loc(e.x, e.y, e.z);
+			if (getenv("MC2_LOG")) printf("[MP_ART] cid=%d type=%d\n", e.a, e.b);
 			CallArtillery(e.a, e.b, loc, e.c, false);	// not the server: creates the strike, queues nothing
 			break;
 		}
@@ -1279,12 +1352,14 @@ long MultiPlayer::addMissionScriptMessageChunk (long code, long param) {
 
 long MultiPlayer::addArtilleryChunk (long commanderId, long artilleryType, Stuff::Vector3D location, long seconds) 
 {
+	if (getenv("MC2_LOG") && iAmHost) printf("[MP_ART] cid=%ld type=%ld\n", commanderId, artilleryType);
 	return(queueWorld(MP_WORLD_ARTILLERY, commanderId, artilleryType, seconds, 0, location.x, location.y, location.z));
 }
 
 //---------------------------------------------------------------------------
 
 long MultiPlayer::addMineChunk (long tileR, long tileC, long teamId, long mineState, long explosionType) {
+	if (getenv("MC2_LOG") && iAmHost) printf("[MP_MINE] r=%ld c=%ld state=%ld\n", tileR, tileC, mineState);
 	return(queueWorld(MP_WORLD_MINE, tileR, tileC, mineState, explosionType));
 }
 
@@ -1538,9 +1613,58 @@ void MultiPlayer::sendEndMission (long result) {
 //---------------------------------------------------------------------------
 extern MoverPtr BringInReinforcement (long vehicleID, long rosterIndex, long commanderID, Stuff::Vector3D pos, bool exists);
 
+void MultiPlayer::assignReinforcementSlot (MCMSG_Reinforcement* msg) {
+	// Host only: reserve the first free roster slot for the vehicle that will land later.
+	for (long i = 0; i < MAX_MULTIPLAYER_MOVERS; i++)
+		if (!moverRoster[i] && !rosterReserved[i]) {
+			rosterReserved[i] = true;
+			msg->rosterIndex = (unsigned char)i;
+			return;
+		}
+	msg->rosterIndex = 255;
+}
+
+void MultiPlayer::requestReinforcement (long vehicleID, Stuff::Vector3D pos) {
+	sendReinforcement(vehicleID, 255, "noone", commanderID, pos, 0);
+}
+
 void MultiPlayer::applyReinforcement (MCMSG_Reinforcement* msg, bool fromNetwork) {
 	long cid = msg->commanderID;
 	switch (msg->stage) {
+		case 0: {	// VTOL drop requested: every machine flies the VTOL for that commander
+			if (cid < 0 || cid >= MAX_MC_PLAYERS || !MissionInterfaceManager::instance())
+				break;
+			reinforcements[cid][0] = msg->rosterIndex;
+			Stuff::Vector3D pos(msg->location[0], msg->location[1], 0.0f);
+			pos.z = land->getTerrainElevation(pos);
+			if (getenv("MC2_LOG")) printf("[MP_VTOL] request cid=%ld vehicle=%ld idx=%d\n", cid, (long)msg->vehicleID, (int)msg->rosterIndex);
+			MissionInterfaceManager::instance()->beginVtol(msg->vehicleID, cid, &pos);
+			break;
+		}
+		case 2: {	// VTOL dropped on the owner's machine: create the vehicle in the assigned slot everywhere
+			if (cid < 0 || cid >= MAX_MC_PLAYERS || msg->rosterIndex >= MAX_MULTIPLAYER_MOVERS)
+				break;
+			Stuff::Vector3D pos(msg->location[0], msg->location[1], 0.0f);
+			pos.z = land->getTerrainElevation(pos);
+			MoverPtr m = BringInReinforcement(msg->vehicleID, msg->rosterIndex, cid, pos, true);
+			if (getenv("MC2_LOG")) printf("[MP_VTOL] landed cid=%ld vehicle=%ld idx=%d wid=%ld\n", cid, (long)msg->vehicleID, (int)msg->rosterIndex, m ? (long)m->getWatchID() : -1L);
+			break;
+		}
+		case 3: {	// Karnov recovery requested for moverRoster[rosterIndex]: every machine flies the Karnov
+			if (cid < 0 || cid >= MAX_MC_PLAYERS || msg->rosterIndex >= MAX_MULTIPLAYER_MOVERS || !MissionInterfaceManager::instance())
+				break;
+			reinforcements[cid][1] = msg->rosterIndex;
+			strncpy(reinforcementPilot[cid], msg->pilotName, sizeof(reinforcementPilot[cid]) - 1);
+			Stuff::Vector3D pos(msg->location[0], msg->location[1], 0.0f);
+			pos.z = land->getTerrainElevation(pos);
+			if (getenv("MC2_LOG")) printf("[MP_KARNOV] request cid=%ld idx=%d pilot=%s\n", cid, (int)msg->rosterIndex, reinforcementPilot[cid]);
+			MissionInterfaceManager::instance()->beginVtol(msg->vehicleID, cid, &pos, NULL);
+			break;
+		}
+		case 5:	// the owner's Karnov finished: repair, re-crew and power up the mech here too
+			if (cid >= 0 && cid < MAX_MC_PLAYERS && MissionInterfaceManager::instance())
+				MissionInterfaceManager::instance()->completeRecovery(cid);
+			break;
 		case 6:	// resource points delta (vehicleID carries the amount: kills, captured buildings, purchases)
 			if (cid >= 0 && cid < MAX_MC_PLAYERS) {
 				playerInfo[cid].resourcePoints += msg->vehicleID;
@@ -1564,8 +1688,7 @@ void MultiPlayer::applyReinforcement (MCMSG_Reinforcement* msg, bool fromNetwork
 void MultiPlayer::sendReinforcement (long vehicleID, long rosterIndex, const char pilotName[16], long commanderID, Stuff::Vector3D pos, unsigned char stage) {
 	if (!inSession)
 		return;
-	if (stage != 6 && stage != 7) {
-		// ponytail: VTOL drops / recovery (stages 0,2,3,5) need the MP purchase flow first (lobby RP is 0 today).
+	if (stage > 7 || stage == 1 || stage == 4) {
 		if (getenv("MC2_LOG")) printf("[MP] reinforcement stage %d not relayed\n", (int)stage);
 		return;
 	}
@@ -1577,7 +1700,14 @@ void MultiPlayer::sendReinforcement (long vehicleID, long rosterIndex, const cha
 	strncpy(msg.pilotName, pilotName ? pilotName : "", sizeof(msg.pilotName) - 1);
 	msg.commanderID = (char)commanderID;
 	msg.location[0] = pos.x; msg.location[1] = pos.y;
-	applyReinforcement(&msg, false);	// our own event: the caller already changed LogisticsData / the group
+	if (stage == 0 || stage == 3) {
+		// A drop / recovery request. The host answers it (slot, broadcast); a client just asks.
+		if (iAmHost) { if (stage == 0) assignReinforcementSlot(&msg); applyReinforcement(&msg, true); }
+		sendMessage(NULL, &msg, sizeof(msg), true /*GUARANTEED*/, false);
+		return;
+	}
+	if (stage != 5)	// stage 2 creates the vehicle here too; 6/7 were applied by the caller; 5 runs completeRecovery in updateVTol
+		applyReinforcement(&msg, stage == 2);
 	sendMessage(NULL, &msg, sizeof(msg), true /*GUARANTEED*/, false);
 }
 
@@ -2125,6 +2255,18 @@ void MultiPlayer::handleReinforcement (NETPLAYER sender, MCMSG_Reinforcement* ms
 	if (iAmHost) {
 		if (findPlayer(sender) < 0)
 			return;
+		if (msg->stage == 0 || msg->stage == 3) {	// drop / recovery request from a client: everyone (origin included) flies it
+			if (msg->stage == 0)
+				assignReinforcementSlot(msg);
+			else {
+				MoverPtr t = (msg->rosterIndex < MAX_MULTIPLAYER_MOVERS) ? moverRoster[msg->rosterIndex] : NULL;
+				if (!t || t->isDestroyed() || !t->isDisabled())
+					return;	// nothing recoverable there
+			}
+			applyReinforcement(msg, true);
+			sendMessage(NULL, msg, sizeof(*msg), true /*GUARANTEED*/, false);
+			return;
+		}
 		applyReinforcement(msg, true);
 		for (long i = 0; i < MAX_MC_PLAYERS; i++)	// forward to everyone but the origin
 			if (playerInfo[i].player && playerInfo[i].player != sender && playerInfo[i].player != myPlayer)
@@ -2712,6 +2854,8 @@ void MultiPlayer::initStartupParameters (bool fresh) {
 	{
 		const char* map = getenv("MC2_MP_MAP");
 		strncpy(missionSettings.map, (map && map[0]) ? map : "mc2_m01", MAXLEN_MAP_NAME - 1);
+		const char* rp = getenv("MC2_MP_RP");	// harness: starting resource points (reinforcement purchases)
+		if (rp && rp[0]) missionSettings.resourcePoints = atol(rp);
 	}
 	chatCount = 0;
 	memset(currentChatMessages, 0, sizeof(currentChatMessages));
