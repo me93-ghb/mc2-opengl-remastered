@@ -1490,25 +1490,8 @@ long TacticalOrder::status (MechWarriorPtr warrior) {
 								warrior->getVehicle()->refitBuddyWID = 0;
 							}
 
-							if (MPlayer) 
-							{
-								if (pointsAvailable > 255.0f)
-									pointsAvailable = 255.0f;
-
-								WeaponShotInfo refitInfo;
-								refitInfo.init(0,
-											   -5,
-											   pointsUsed,
-											   GROUNDVEHICLE_LOCATION_TURRET,
-											   0.0);
-								MPlayer->addWeaponHitChunk((GameObjectPtr)warrior->getVehicle(), &refitInfo);
-								refitInfo.init(0,
-											   -5,
-											   pointsAvailable,
-											   0,
-											   0.0);
-								MPlayer->addWeaponHitChunk(target, &refitInfo, TRUE);
-							}
+							if (MPlayer && MPlayer->isServer())
+								MPlayer->relayRefit((MoverPtr)target, warrior->getVehicle(), pointsAvailable, pointsUsed);
 							stage += result;
 							if (result == 0)
 								time = scenarioTime;
@@ -1567,25 +1550,8 @@ long TacticalOrder::status (MechWarriorPtr warrior) {
 							float pointsAvailable = target->getRefitPoints();
 							long result = warrior->getVehicle()->refit(pointsAvailable, pointsUsed);
 							target->burnRefitPoints(pointsUsed);
-							if (MPlayer) 
-							{
-								if (pointsAvailable > 255.0f)
-									pointsAvailable = 255.0f;
-
-								WeaponShotInfo refitInfo;
-								refitInfo.init(0,
-											   -5,
-											   pointsUsed,
-											   -1,
-											   0.0);
-								MPlayer->addWeaponHitChunk(target, &refitInfo);
-								refitInfo.init(0,
-											   -5,
-											   pointsAvailable,
-											   0,
-												0.0);
-								MPlayer->addWeaponHitChunk(warrior->getVehicle(), &refitInfo, true);
-							}
+							if (MPlayer && MPlayer->isServer())
+								MPlayer->relayRefit(warrior->getVehicle(), target, pointsAvailable, pointsUsed);
 
 							stage += result;
 							if (result == 0)

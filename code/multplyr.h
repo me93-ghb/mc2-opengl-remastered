@@ -1692,6 +1692,7 @@ class MultiPlayer {
 		long addWeaponHitChunk (WeaponHitChunkPtr chunk);
 
 		long addWeaponHitChunk (GameObjectPtr target, WeaponShotInfoPtr shotInfo, bool isRefit = false);
+		void relayRefit (MoverPtr fixed, GameObjectPtr fixer, float pointsAvailable, float pointsUsed);	// host: one refit tick
 
 		void grabWeaponHitChunks (unsigned long* packedChunkBuffer, long numChunks);
 
@@ -1753,8 +1754,6 @@ class MultiPlayer {
 
 		void handlePlayerOrder (NETPLAYER sender, MCMSG_PlayerOrder* msg);
 
-		void handlePlayerMoverGroup (NETPLAYER sender, MCMSG_PlayerMoverGroup* msg);
-		
 		void handlePlayerArtillery (NETPLAYER sender, MCMSG_PlayerArtillery* msg);
 
 		void handleMoverUpdate (NETPLAYER sender, MCMSG_MoverUpdate* msg);
@@ -1811,11 +1810,6 @@ class MultiPlayer {
   							  bool queuedOrder = false);
 
 		void sendHoldPosition (void);
-
-		void sendPlayerMoverGroup (long groupId,
-								   long numMovers,
-								   MoverPtr* moverList,
-								   long point);
 
 		void sendPlayerArtillery (long strikeType, Stuff::Vector3D location, long seconds);
 			

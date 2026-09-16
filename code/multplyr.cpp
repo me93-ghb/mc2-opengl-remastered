@@ -846,6 +846,77 @@ void MultiPlayer::missionDiagnostics (void) {
 		}
 		if (strcmp(getenv("MC2_MP_SCRIPT_ORDERS"), "recover") == 0)
 			return;	// nobody moves: the Karnov comes to the ejected mech, no fight needed
+		if (strcmp(getenv("MC2_MP_SCRIPT_ORDERS"), "fire") == 0) {
+			// Shoot at the nearest tree: a shot into a tree has a 1 in 10 chance of lighting it (carnage.cpp).
+			MoverPtr me = localMovers[0];
+			GameObjectPtr tree = NULL; float best = 1.0e30f;
+			for (long k = 0; me && k < ObjectManager->getNumTerrainObjects(); k++) {
+				TerrainObjectPtr o = ObjectManager->getTerrainObject(k);
+				if (!o || o->getSubType() != TERROBJ_TREE || o->isDestroyed()) continue;
+				float d = me->distanceFrom(o->getPosition());
+				if (d < best) { best = d; tree = o; }
+			}
+			if (!tree) { printf("[MP_FIRE] no terrain-object tree on this map (TREE-class trees never burn: carnage.cpp)\n"); fflush(stdout); return; }
+			for (long i = 0; i < numLocalMovers; i++) {
+				MoverPtr m = localMovers[i];
+				if (!m || m->isDestroyed()) continue;
+				TacticalOrder tacOrder;
+				tacOrder.init(ORDER_ORIGIN_PLAYER, TACTICAL_ORDER_ATTACK_POINT);
+				tacOrder.attackParams.targetPoint = tree->getPosition();
+				tacOrder.attackParams.type = ATTACK_TO_DESTROY;
+				tacOrder.attackParams.method = ATTACKMETHOD_RANGED;
+				tacOrder.attackParams.range = FIRERANGE_OPTIMAL;
+				tacOrder.attackParams.pursue = true;
+				tacOrder.moveParams.wayPath.mode[0] = TRAVEL_MODE_FAST;
+				tacOrder.pack(NULL, NULL);
+				sendPlayerOrder(&tacOrder, false, 1, &m);
+			}
+			printf("[MP_FIRE] attack-point orders at tree pid=%ld dist=%.0f\n", (long)tree->getPartId(), best); fflush(stdout);
+			return;
+		}
+		if (strcmp(getenv("MC2_MP_SCRIPT_ORDERS"), "refit") == 0) {
+			// Buy a repair truck, shell localMovers[0] with our own artillery, then send the truck to fix it.
+			static bool s_bought = false, s_sent = false, s_shelled = false;
+			const long kRepairTruckID = 182, kRepairTruckCost = 7000;
+			if (!s_bought && numLocalMovers > 0 && localMovers[0] && playerInfo[commanderID].resourcePoints >= kRepairTruckCost) {
+				s_bought = true;
+				if (LogisticsData::instance) LogisticsData::instance->decrementResourcePoints((int)kRepairTruckCost);
+				Stuff::Vector3D dropPos = localMovers[0]->getPosition();
+				dropPos.x -= 200.0f;	// outside the strike that will hit localMovers[0]
+				sendReinforcement(-kRepairTruckCost, 0, "noname", commanderID, dropPos, 6);
+				requestReinforcement(kRepairTruckID, dropPos);
+				printf("[MP_REFIT] purchase repair truck\n"); fflush(stdout);
+			}
+			if (s_bought && !s_shelled && now - s_missionT0 > 30000) {
+				s_shelled = true;
+				sendPlayerArtillery(ARTILLERY_SMALL, localMovers[0]->getPosition(), 5);
+				printf("[MP_REFIT] shelling own mech for damage\n"); fflush(stdout);
+			}
+			if (s_sent)
+				return;	// the truck needs the target still and powered down: no more orders to anyone
+			for (long i = 0; i < numLocalMovers; i++) {
+				MoverPtr m = localMovers[i];
+				if (!m || m->isDestroyed()) continue;
+				TacticalOrder tacOrder;
+				if (m->getObjectClass() == GROUNDVEHICLE && ((GroundVehiclePtr)m)->getRefitPoints() > 0.0f) {
+					if (s_sent || now - s_missionT0 < 60000 || !localMovers[0] || localMovers[0]->isDestroyed()) continue;
+					s_sent = true;	// same order MissionInterfaceManager::doRepair sends
+					tacOrder.init(ORDER_ORIGIN_PLAYER, TACTICAL_ORDER_REFIT, false);
+					tacOrder.targetWID = localMovers[0]->getWatchID();
+					tacOrder.selectionIndex = -1;
+					tacOrder.moveParams.wayPath.mode[0] = TRAVEL_MODE_FAST;
+					tacOrder.moveParams.faceObject = true;
+					tacOrder.moveParams.fromArea = -1;
+					tacOrder.moveParams.wait = false;
+					printf("[MP_REFIT] refit order sent truck=%ld target=%ld\n", m->getNetRosterIndex(), localMovers[0]->getNetRosterIndex()); fflush(stdout);
+				}
+				else
+					continue;	// everyone else stays put
+				tacOrder.pack(NULL, NULL);
+				sendPlayerOrder(&tacOrder, false, 1, &m);
+			}
+			return;
+		}
 		for (long i = 0; i < numLocalMovers; i++) {
 			MoverPtr m = localMovers[i];
 			if (!m || m->isDestroyed()) continue;
@@ -1304,8 +1375,10 @@ void MultiPlayer::applyWorldEntry (const MpWorldEntry& e) {
 		}
 		case MP_WORLD_FIRE: {
 			GameObjectPtr o = ObjectManager->findByPartId(e.a);
-			if (o && o->getObjectClass() == TERRAINOBJECT)
+			if (o && o->getObjectClass() == TERRAINOBJECT) {
 				((TerrainObjectPtr)o)->lightOnFire((float)e.b);
+				if (getenv("MC2_LOG")) printf("[MP_FIRE] pid=%d\n", e.a);
+			}
 			break;
 		}
 		case MP_WORLD_ARTILLERY: {
@@ -1366,11 +1439,14 @@ long MultiPlayer::addMineChunk (long tileR, long tileC, long teamId, long mineSt
 //---------------------------------------------------------------------------
 
 long MultiPlayer::addLightOnFireChunk (GameObjectPtr object, long seconds) {
+	if (getenv("MC2_LOG") && iAmHost && object) printf("[MP_FIRE] pid=%ld\n", (long)object->getPartId());
 	return(queueWorld(MP_WORLD_FIRE, object ? object->getPartId() : 0, seconds));
 }
 
 //---------------------------------------------------------------------------
 
+// Not relayed: the MP results screen shows playerInfo kills/losses (world relay) and the
+// pmp_ pilots are not persisted, so nothing reads a client's per-pilot kill tallies.
 long MultiPlayer::addPilotKillStat (MoverPtr mover, long vehicleClass) {
 
 	return(0);
@@ -1426,6 +1502,24 @@ long MultiPlayer::addWeaponHitChunk (WeaponHitChunkPtr chunk) {
 }
 
 //---------------------------------------------------------------------------
+
+// A refit tick on the host: the repaired mover gets a refit hit chunk carrying the points that
+// were available (clients run the same Mover::refit), the fixer gets a cause -5 chunk with the
+// points burned. Chunk damage is quarter-point granular and below 256, hence the rounding.
+void MultiPlayer::relayRefit (MoverPtr fixed, GameObjectPtr fixer, float pointsAvailable, float pointsUsed) {
+	if (!iAmHost || !fixed)
+		return;
+	float avail = floorf((pointsAvailable > 255.0f ? 255.0f : pointsAvailable) * 4.0f) * 0.25f;
+	float used  = floorf((pointsUsed      > 255.0f ? 255.0f : pointsUsed)      * 4.0f) * 0.25f;
+	WeaponShotInfo info;
+	info.init(0, -5, avail, 0, 0.0);
+	addWeaponHitChunk(fixed, &info, true);
+	if (fixer && fixer->isMover()) {
+		info.init(0, -5, used, -1, 0.0);
+		addWeaponHitChunk(fixer, &info);
+	}
+	if (getenv("MC2_LOG")) printf("[MP_REFIT] idx=%ld available=%.2f used=%.2f\n", fixed->getNetRosterIndex(), avail, used);
+}
 
 long MultiPlayer::addWeaponHitChunk (GameObjectPtr target, WeaponShotInfoPtr shotInfo, bool isRefit) {
 	if (!iAmHost || !target || !shotInfo)
@@ -1798,12 +1892,6 @@ void MultiPlayer::sendHoldPosition (void) {
 
 //---------------------------------------------------------------------------
 
-void MultiPlayer::sendPlayerMoverGroup (long groupId,
-										long numMovers,
-										MoverPtr* moverList,
-										long point) {
-
-}
 
 //---------------------------------------------------------------------------
 
@@ -2367,9 +2455,6 @@ void MultiPlayer::handlePlayerOrder (NETPLAYER sender, MCMSG_PlayerOrder* msg) {
 
 //---------------------------------------------------------------------------
 
-void MultiPlayer::handlePlayerMoverGroup (NETPLAYER sender, MCMSG_PlayerMoverGroup* msg) {
-
-}
 
 //---------------------------------------------------------------------------
 
@@ -2521,8 +2606,21 @@ void MultiPlayer::handleWeaponHitUpdate (NETPLAYER sender, MCMSG_WeaponHitUpdate
 		chunk.unpack();
 		if (!chunk.valid(1))
 			continue;
-		if (chunk.refit)
-			continue;	// ponytail: repair-truck refits not relayed yet (Elimination v1)
+		if (chunk.refit || chunk.cause == -5) {	// relayRefit: repair the mover here, or burn the fixer's points
+			GameObjectPtr t = (chunk.targetType == WEAPONHITCHUNK_TARGET_MOVER && chunk.targetId >= 0 && chunk.targetId < MAX_MULTIPLAYER_MOVERS)
+				? (GameObjectPtr)moverRoster[chunk.targetId] : NULL;
+			if (t && t->isMover()) {
+				if (chunk.refit) {
+					float used = 0.0f;
+					((MoverPtr)t)->refit(chunk.damage, used, false);
+					if (getenv("MC2_LOG")) printf("[MP_REFIT] idx=%d available=%.2f used=%.2f\n", chunk.targetId, chunk.damage, used);
+				}
+				else
+					t->burnRefitPoints(chunk.damage);
+				applied++;
+			}
+			continue;
+		}
 		GameObjectPtr target = NULL;
 		switch (chunk.targetType) {
 			case WEAPONHITCHUNK_TARGET_MOVER:

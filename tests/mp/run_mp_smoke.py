@@ -44,7 +44,10 @@ def main():
     ap.add_argument("--keep-logs", action="store_true")
     ap.add_argument("--no-launch", action="store_true", help="stop after the lobby checks")
     ap.add_argument("--play", type=int, default=150, help="seconds to keep both in-mission after start")
-    ap.add_argument("--orders", default="1", help="MC2_MP_SCRIPT_ORDERS for the client: 1=attack, move=move-only, capture=capture nearest building, move when none left, vtol=buy a minelayer, lay mines, call artillery, recover=eject a pilot and buy a Karnov recovery")
+    ap.add_argument("--orders", default="1", help="MC2_MP_SCRIPT_ORDERS for the client: 1=attack, move=move-only, capture=capture nearest building, move when none left, vtol=buy a minelayer, lay mines, call artillery, recover=eject a pilot and buy a Karnov recovery, fire=shoot at a tree, refit=buy a repair truck and fix a shot-up mech")
+    ap.add_argument("--map", default=None, help="MC2_MP_MAP for the host (default mc2_m01)")
+    ap.add_argument("--timelimit", type=int, default=None, help="MC2_MP_TIMELIMIT seconds for the host lobby")
+    ap.add_argument("--expect-winner", type=int, default=None, help="require '[MP] mission over: winningTeam=N' on both sides")
     ap.add_argument("--drop", choices=["client", "host"], help="kill that side 40 s into the mission and check the other copes")
     ap.add_argument("--rematch", action="store_true", help="after the match ends, expect both to re-enter the lobby, re-ready, relaunch and load a second mission")
     a = ap.parse_args()
@@ -53,8 +56,10 @@ def main():
     henv = {"MC2_MP_AUTOHOST": "1", "MC2_MP_AUTOTEST": "1", "MC2_MP_PORT": str(a.port), "MC2_MP_SESSION": "smoke"}
     if a.rematch or a.drop:
         henv["MC2_MP_AUTORESULTS"] = "1"; os.environ["MC2_MP_AUTORESULTS"] = "1"
-    if a.orders in ("vtol", "recover"):
+    if a.orders in ("vtol", "recover", "refit"):
         henv["MC2_MP_RP"] = "10000"
+    if a.map: henv["MC2_MP_MAP"] = a.map
+    if a.timelimit: henv["MC2_MP_TIMELIMIT"] = str(a.timelimit)
     if not a.no_launch:
         henv["MC2_MP_AUTOLAUNCH"] = "2"
     host, hlog = start("host", henv, logdir)
@@ -157,9 +162,9 @@ def main():
                             first.setdefault(k, v); last[k] = v
                     moved = any(first[k] != last[k] for k in first)
                     checks.append(("host: client mechs moved", moved, f"tracked={len(first)}"))
-                    nm = "INFO" if a.orders == "recover" else "FAIL"   # the recover run keeps the lance still on purpose
+                    nm = "INFO" if a.orders in ("recover", "refit") else "FAIL"   # those runs keep the lance still on purpose
                     print(f"[mp-smoke] {'PASS' if moved else nm} host: client mechs moved (tracked={len(first)})", flush=True)
-                ok = ok and got and (moved or a.orders == "recover")
+                ok = ok and got and (moved or a.orders in ("recover", "refit"))
                 # MP-3 slice 2: the client's own mechs move on the CLIENT, and host/client cells agree
                 def samples(path):
                     first, last = {}, {}
@@ -170,7 +175,7 @@ def main():
                             first.setdefault(k, v); last[k] = v
                     return first, last
                 hf, hl = samples(hlog); cf, cl = samples(clog)
-                cmoved = any(cf[k] != cl[k] for k in cf if k[0] == "1") or a.orders == "recover"
+                cmoved = any(cf[k] != cl[k] for k in cf if k[0] == "1") or a.orders in ("recover", "refit")
                 print(f"[mp-smoke] {'PASS' if cmoved else 'FAIL'} client: own mechs moved on client (tracked={sum(1 for k in cf if k[0]=='1')})", flush=True)
                 common = [k for k in hl if k in cl]
                 agree = sum(1 for k in common if abs(hl[k][0]-cl[k][0]) <= 3 and abs(hl[k][1]-cl[k][1]) <= 3)
@@ -183,12 +188,12 @@ def main():
                 fired = any("[MP] fire chunks sent" in l for l in open(hlog, errors="replace"))
                 hitsent = any("[MP] weapon hits sent" in l for l in open(hlog, errors="replace"))
                 hitapplied = [l for l in open(clog, errors="replace") if "[MP] weapon hits applied=" in l and "applied=0" not in l]
-                nf = "INFO" if a.orders in ("capture", "vtol", "recover") else "FAIL"   # combat is not required in capture runs
+                nf = "INFO" if a.orders in ("capture", "capturehq", "vtol", "recover", "fire", "refit") else "FAIL"   # combat is not required in capture runs
                 print(f"[mp-smoke] {'PASS' if fired else nf} host: weapon fire relayed", flush=True)
                 print(f"[mp-smoke] {'PASS' if hitsent else nf} host: weapon hits sent", flush=True)
                 print(f"[mp-smoke] {'PASS' if hitapplied else nf} client: weapon hits applied ({len(hitapplied)} batches)", flush=True)
                 checks += [("fire relayed", fired, ""), ("hits sent", hitsent, ""), ("hits applied", bool(hitapplied), "")]
-                if a.orders not in ("capture", "vtol", "recover"):   # those runs need not bring the lances together
+                if a.orders not in ("capture", "capturehq", "vtol", "recover", "fire", "refit"):   # those runs need not bring the lances together
                     ok = ok and fired and hitsent and bool(hitapplied)
                 # MP-3 slice 4: world events (kills/losses at least) reach the client
                 wsent = any("[MP] world updates sent=" in l for l in open(hlog, errors="replace"))
@@ -209,6 +214,26 @@ def main():
                 ok = ok and alive and end_ok
         if a.drop:
             pass    # drop runs are judged above
+        elif a.orders == "fire":
+            wait_for(clog, r"\[MP_FIRE\] pid=", time.time() + 10, procs)
+            hf = [l.strip().split("] ", 1)[1] for l in open(hlog, errors="replace") if "[MP_FIRE] pid=" in l]
+            cf = [l.strip().split("] ", 1)[1] for l in open(clog, errors="replace") if "[MP_FIRE] pid=" in l]
+            no_tree = any("no terrain-object tree" in l for l in open(clog, errors="replace"))
+            fire_ok = bool(hf) and all(x in cf for x in hf)
+            if no_tree:
+                print("[mp-smoke] SKIP tree fires: this map has no terrain-object trees, so nothing can burn", flush=True)
+            else:
+                print(f"[mp-smoke] {'PASS' if fire_ok else 'FAIL'} tree fires relayed: host={len(hf)} client={len(cf)} missing={[x for x in hf if x not in cf][:3]}", flush=True)
+                ok = ok and fire_ok
+        elif a.orders == "refit":
+            wait_for(clog, r"\[MP_REFIT\] idx=", time.time() + 15, procs)
+            rx = r"\[MP_REFIT\] idx=(\d+) available=([0-9.]+) used=([0-9.]+)"
+            hr = [re.search(rx, l).groups() for l in open(hlog, errors="replace") if re.search(rx, l)]
+            cr = [re.search(rx, l).groups() for l in open(clog, errors="replace") if re.search(rx, l)]
+            sent = any("[MP_REFIT] refit order sent" in l for l in open(clog, errors="replace"))
+            refit_ok = sent and bool(hr) and hr == cr[:len(hr)] and any(float(x[2]) > 0 for x in hr)
+            print(f"[mp-smoke] {'PASS' if refit_ok else 'FAIL'} refit relayed: sent={sent} host={hr[:3]} client={cr[:3]} (host {len(hr)}, client {len(cr)})", flush=True)
+            ok = ok and refit_ok
         elif a.orders == "recover":
             # Karnov recovery: the client ejects a pilot, asks for a recovery, every machine flies the
             # Karnov and re-crews the same mech; the mech's pilot is alive again on both sides.
