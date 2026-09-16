@@ -761,6 +761,8 @@ void MPParameterScreen::update()
 				s_autoLaunched = true;
 				if ( const char* rp = getenv("MC2_MP_RP") )	// harness: starting RP (setMission reloads the map default)
 					MPlayer->missionSettings.resourcePoints = atol( rp );
+				if ( const char* tl = getenv("MC2_MP_TIMELIMIT") )	// harness: time limit in seconds
+					MPlayer->missionSettings.timeLimit = (float)atof( tl );
 				printf("[MP] autolaunch: %ld players ready, pressing Launch\n", n);
 				fflush(stdout);
 				handleMessage( 50/*MB_MSG_NEXT*/, 50 );

@@ -42,6 +42,7 @@ class MPTransport
 		bool			isOpen() const	{ return enetHost != 0; }
 		bool			isConnected() const { return hosting || serverPeer != 0; }
 		void*			getServerPeer() const { return serverPeer; }
+		void			setPeerTimeouts(int minMs, int maxMs);	// every connected peer; new peers get the same
 		int				getPeerCount() const;
 
 	private:
@@ -50,6 +51,8 @@ class MPTransport
 		void*			serverPeer;		// ENetPeer* (clients only)
 		void*			pendingPeer;	// ENetPeer* while a connect() is in flight
 		bool			hosting;
+		int			timeoutMinMs = 60000;	// see setPeerTimeouts
+		int			timeoutMaxMs = 120000;
 
 		static int		libraryRefs;
 };

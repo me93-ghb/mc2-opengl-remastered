@@ -550,6 +550,17 @@ long MultiPlayer::endSessionScan (void) {
 
 //---------------------------------------------------------------------------
 
+void MultiPlayer::setMode (long newMode) {
+	mode = newMode;
+	// A dead peer must be noticed fast during play (spec MP-3, ~15 s observed with 5/10 s), but a
+	// client loading a big map on a slow or paging machine can block for minutes without servicing
+	// the socket, so everything outside the mission runs with loose timeouts.
+	if (newMode == MULTIPLAYER_MODE_MISSION)
+		s_transport.setPeerTimeouts(5000, 10000);
+	else
+		s_transport.setPeerTimeouts(60000, 120000);
+}
+
 void MultiPlayer::setDirectAddress (const char* hostPort) {
 	strncpy(s_directAddr, hostPort ? hostPort : "", sizeof(s_directAddr) - 1);
 	s_directAddr[sizeof(s_directAddr) - 1] = 0;
@@ -936,12 +947,14 @@ void MultiPlayer::missionDiagnostics (void) {
 				continue;
 			}
 			GameObjectPtr capTarget = NULL;
-			if (strcmp(getenv("MC2_MP_SCRIPT_ORDERS"), "capture") == 0) {
-				// Nearest building this lance can still capture (turret controls, resource buildings).
+			const bool hqOnly = (strcmp(getenv("MC2_MP_SCRIPT_ORDERS"), "capturehq") == 0);
+			if (strcmp(getenv("MC2_MP_SCRIPT_ORDERS"), "capture") == 0 || hqOnly) {
+				// Nearest building this lance can still capture (capturehq: HQ buildings only, the mode objectives).
 				float best = 1.0e30f;
 				for (long b = 0; b < ObjectManager->getNumBuildings(); b++) {
 					BuildingPtr bld = ObjectManager->getBuilding(b);
 					if (!bld || !bld->isCaptureable(m->getTeamId())) continue;
+					if (hqOnly && bld->getObjectType()->getObjTypeNum() != GENERIC_HQ_BUILDING_OBJNUM) continue;
 					float d = m->distanceFrom(bld->getPosition());
 					if (d < best) { best = d; capTarget = bld; }
 				}
@@ -954,7 +967,7 @@ void MultiPlayer::missionDiagnostics (void) {
 				tacOrder.attackParams.pursue = true;
 				tacOrder.moveParams.wayPath.mode[0] = TRAVEL_MODE_FAST;
 				}
-			else if (strcmp(getenv("MC2_MP_SCRIPT_ORDERS"), "move") == 0 || strcmp(getenv("MC2_MP_SCRIPT_ORDERS"), "capture") == 0 || vtolMode || strcmp(getenv("MC2_MP_SCRIPT_ORDERS"), "recover") == 0) {
+			else if (strcmp(getenv("MC2_MP_SCRIPT_ORDERS"), "move") == 0 || strcmp(getenv("MC2_MP_SCRIPT_ORDERS"), "capture") == 0 || hqOnly || vtolMode || strcmp(getenv("MC2_MP_SCRIPT_ORDERS"), "recover") == 0) {
 				// Plain move toward the enemy: exercises fire-at-will on both lances.
 				tacOrder.init(ORDER_ORIGIN_PLAYER, TACTICAL_ORDER_MOVETO_POINT, false);
 				Stuff::Vector3D p = enemy->getPosition();
@@ -986,6 +999,7 @@ void MultiPlayer::resetForNewGame (void) {
 	memset(localMovers, 0, sizeof(localMovers));
 	memset(turretRoster, 0, sizeof(turretRoster));
 	memset(rosterReserved, 0, sizeof(rosterReserved));
+	resetModeState();
 	for (long i = 0; i < MAX_MC_PLAYERS; i++) reinforcements[i][0] = reinforcements[i][1] = -1;
 	numMovers = numLocalMovers = numTurrets = 0;
 	numWeaponHitChunks = 0;
@@ -1334,8 +1348,29 @@ void MultiPlayer::addToTurretRoster (TurretPtr turret) {
 
 //---------------------------------------------------------------------------
 
+// HQ buildings carry a drop-zone slot as their map team. Give each one to the commander who
+// loaded into that slot (team + commander), leave the rest neutral and capturable. The
+// mode rules in calcMissionStatus read the result.
 void MultiPlayer::initSpecialBuildings (char commandersToLoad[8][3]) {
-
+	long n = 0;
+	for (long i = 0; i < ObjectManager->getNumBuildings(); i++) {
+		BuildingPtr b = ObjectManager->getBuilding(i);
+		if (!b || b->getObjectType()->getObjTypeNum() != GENERIC_HQ_BUILDING_OBJNUM)
+			continue;
+		long slot = b->getTeamId();
+		if (slot >= 0 && slot < MAX_MC_PLAYERS && commandersToLoad[slot][0] >= 0) {
+			b->setCommanderId(commandersToLoad[slot][0]);
+			b->setTeamId(commandersToLoad[slot][1], true);
+		}
+		else {
+			b->setCommanderId(-1);
+			b->setTeamId(-1, true);
+		}
+		b->setFlag(OBJECT_FLAG_CAPTURABLE, true);
+		if (getenv("MC2_LOG")) printf("[MP_HQ] pid=%ld slot=%ld team=%ld cid=%ld\n", (long)b->getPartId(), slot, (long)b->getTeamId(), (long)b->getCommanderId());
+		n++;
+	}
+	if (getenv("MC2_LOG")) printf("[MP_HQ] %ld HQ buildings, missionType=%d\n", n, (int)missionSettings.missionType);
 }
 
 //***************************************************************************
@@ -2820,6 +2855,16 @@ long MultiPlayer::updateClients (bool forceIt) {
 
 //---------------------------------------------------------------------------
 
+// Mode bookkeeping across frames (host): hold time per team, HQ owners at the start.
+static float  s_holdTime[MAX_TEAMS];
+static long   s_hqStartTeam[MAX_MULTIPLAYER_TURRETS];
+static double s_modeLastTime = -1.0;
+void MultiPlayer::resetModeState (void) {
+	memset(s_holdTime, 0, sizeof(s_holdTime));
+	for (long i = 0; i < MAX_MULTIPLAYER_TURRETS; i++) s_hqStartTeam[i] = -2;
+	s_modeLastTime = -1.0;
+}
+
 bool MultiPlayer::calcMissionStatus (void) {
 	// Elimination. The host decides; clients end when MCMSG_EndMission arrives.
 	// A commander is out when every mover in its roster is destroyed or disabled;
@@ -2862,14 +2907,83 @@ bool MultiPlayer::calcMissionStatus (void) {
 	// with nobody else loaded never ends (nothing to eliminate).
 	if (teamsInPlay < 2 && !timeUp)
 		return(false);
-	if (teamsAlive > 1 && !timeUp)
+
+	// Mode rules on top of elimination (a wiped-out team always loses). HQ buildings are the
+	// map's objectives: the hill (King of the Hill, Last Man on the Hill), the bases (Capture
+	// Base), the territories (Territories). Elimination, Last Man Standing and Other (no map
+	// ships an objective script) end on elimination or the time limit.
+	long hqTeam[MAX_MULTIPLAYER_TURRETS]; long numHQ = 0;
+	long hqPerTeam[MAX_TEAMS]; memset(hqPerTeam, 0, sizeof(hqPerTeam));
+	for (long i = 0; i < ObjectManager->getNumBuildings() && numHQ < MAX_MULTIPLAYER_TURRETS; i++) {
+		BuildingPtr b = ObjectManager->getBuilding(i);
+		if (!b || b->getObjectType()->getObjTypeNum() != GENERIC_HQ_BUILDING_OBJNUM || b->isDestroyed()) continue;
+		long t = b->getTeamId();
+		hqTeam[numHQ++] = t;
+		if (t >= 0 && t < MAX_TEAMS) hqPerTeam[t]++;
+		if (s_hqStartTeam[numHQ - 1] == -2) s_hqStartTeam[numHQ - 1] = t;	// first look: who owned it at the start
+	}
+	float dt = (s_modeLastTime >= 0.0f) ? (float)(mission->actualTime - s_modeLastTime) : 0.0f;
+	s_modeLastTime = mission->actualTime;
+	long modeWinner = -1; bool modeOver = false;
+	switch (missionSettings.missionType) {
+		case MISSION_TYPE_KING_OF_THE_HILL:
+			for (long i = 0; i < numHQ; i++)
+				if (hqTeam[i] >= 0 && hqTeam[i] < MAX_TEAMS) s_holdTime[hqTeam[i]] += dt;
+			for (long t = 0; t < MAX_TEAMS; t++) teamScore[t] = (int)s_holdTime[t];	// scoreboard shows seconds held
+			if (timeUp) {
+				float best = 0.0f; long ties = 0;
+				for (long t = 0; t < MAX_TEAMS; t++) {
+					if (s_holdTime[t] > best) { best = s_holdTime[t]; modeWinner = t; ties = 0; }
+					else if (s_holdTime[t] == best && best > 0.0f) ties++;
+				}
+				if (ties) modeWinner = -1;
+				modeOver = true;
+			}
+			break;
+		case MISSION_TYPE_LAST_MAN_ON_THE_HILL:
+			if (timeUp) {
+				modeWinner = (numHQ > 0 && hqTeam[0] >= 0) ? hqTeam[0] : -1;
+				modeOver = true;
+			}
+			break;
+		case MISSION_TYPE_TERRITORIES: {
+			long best = 0, bestTeam = -1, ties = 0;
+			for (long t = 0; t < MAX_TEAMS; t++) {
+				if (hqPerTeam[t] > best) { best = hqPerTeam[t]; bestTeam = t; ties = 0; }
+				else if (hqPerTeam[t] == best && best > 0) ties++;
+			}
+			if (numHQ > 0 && best == numHQ) { modeWinner = bestTeam; modeOver = true; }	// holds every territory
+			else if (timeUp) { modeWinner = ties ? -1 : bestTeam; modeOver = true; }
+			break;
+		}
+		case MISSION_TYPE_CAPTURE_BASE: {
+			// A team is in the game while it still owns the HQ it started with.
+			long basesLeft = 0, lastBase = -1;
+			for (long t = 0; t < MAX_TEAMS; t++) {
+				bool owns = false;
+				for (long i = 0; i < numHQ; i++)
+					if (s_hqStartTeam[i] == t && hqTeam[i] == t) owns = true;
+				if (owns) { basesLeft++; lastBase = t; }
+			}
+			bool anyStart = false;
+			for (long i = 0; i < numHQ; i++) if (s_hqStartTeam[i] >= 0) anyStart = true;
+			if (anyStart && basesLeft <= 1) { modeWinner = (basesLeft == 1) ? lastBase : -1; modeOver = true; }
+			else if (timeUp) { modeWinner = -1; modeOver = true; }
+			break;
+		}
+		default:
+			break;
+	}
+	if (!modeOver && teamsAlive > 1 && !timeUp)
 		return(false);
-	winningTeam = (teamsAlive == 1) ? lastTeam : -1;
+	winningTeam = modeOver ? modeWinner : ((teamsAlive == 1) ? lastTeam : -1);
+	if (modeOver && teamsAlive == 1 && modeWinner < 0)
+		winningTeam = lastTeam;	// the hill decided nothing but only one team is left standing
 	for (long cid = 0; cid < MAX_MC_PLAYERS; cid++)
 		if (playerInfo[cid].player)
 			playerInfo[cid].winner = (winningTeam >= 0 && playerInfo[cid].team == winningTeam);
 	if (getenv("MC2_LOG"))
-		printf("[MP] mission over: winningTeam=%ld timeUp=%d t=%.1f\n", winningTeam, timeUp ? 1 : 0, mission->actualTime);
+		printf("[MP] mission over: winningTeam=%ld timeUp=%d t=%.1f mode=%d hqs=%ld\n", winningTeam, timeUp ? 1 : 0, mission->actualTime, (int)missionSettings.missionType, numHQ);
 	if (!endMission) {
 		endMission = true;
 		sendEndMission(winningTeam);

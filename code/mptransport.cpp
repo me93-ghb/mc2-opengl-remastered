@@ -148,6 +148,16 @@ int MPTransport::getPeerCount() const
 	return n;
 }
 
+void MPTransport::setPeerTimeouts(int minMs, int maxMs)
+{
+	timeoutMinMs = minMs; timeoutMaxMs = maxMs;
+	ENetHost* h = (ENetHost*)enetHost;
+	if (!h) return;
+	for (size_t i = 0; i < h->peerCount; i++)
+		if (h->peers[i].state == ENET_PEER_STATE_CONNECTED)
+			enet_peer_timeout(&h->peers[i], 0, minMs, maxMs);
+}
+
 void MPTransport::poll(void* user, RecvFn onRecv, PeerFn onPeer, int timeoutMs)
 {
 	ENetHost* h = (ENetHost*)enetHost;
@@ -163,8 +173,10 @@ void MPTransport::poll(void* user, RecvFn onRecv, PeerFn onPeer, int timeoutMs)
 		switch (ev.type)
 		{
 			case ENET_EVENT_TYPE_CONNECT:
-				// Spec MP-3 wants a drop noticed fast (ENet default: ~40 s measured); 5/10 s still tolerates an 8 GB box paging.
-				enet_peer_timeout(ev.peer, 0, 5000, 10000);
+				// Loose until the mission runs (a client loading a big map can block for minutes on a
+				// paging box); MultiPlayer::setMode tightens it to 5/10 s in the mission (ENet's own
+				// default took ~40 s to notice a dead host).
+				enet_peer_timeout(ev.peer, 0, timeoutMinMs, timeoutMaxMs);
 				if (!hosting && ev.peer == pendingPeer)
 				{
 					serverPeer = ev.peer;

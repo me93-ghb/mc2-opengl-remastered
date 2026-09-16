@@ -332,6 +332,12 @@ def main():
                 ch = [rx.search(l).groups() for l in open(clog, errors="replace") if rx.search(l)]
                 ok = len(hh) >= 2 and len(ch) >= 2 and hh[1] == ch[1]
                 print(f"[mp-smoke] {'PASS' if ok else 'FAIL'} rematch roster+seed identical: host={hh[1:2]} client={ch[1:2]}", flush=True)
+        if a.expect_winner is not None:
+            pat = r"\[MP\] mission over: winningTeam=%d" % a.expect_winner
+            wh = wait_for(hlog, pat, time.time() + 20, procs); wc = wait_for(clog, pat, time.time() + 20, procs)
+            w_ok = wh is not None and not str(wh).startswith("process exited") and wc is not None and not str(wc).startswith("process exited")
+            print(f"[mp-smoke] {'PASS' if w_ok else 'FAIL'} expected winner team {a.expect_winner}: host={wh} client={wc}", flush=True)
+            ok = ok and w_ok
         unhandled = [l.strip() for p in (hlog, clog) for l in open(p, errors="replace") if "unhandled msg type" in l]
         if unhandled:
             ok = False; print("[mp-smoke] FAIL unhandled messages:", unhandled[:5], flush=True)

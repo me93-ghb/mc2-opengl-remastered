@@ -1499,9 +1499,7 @@ class MultiPlayer {
 			return(isServer());
 		}
 
-		void setMode (long newMode) {
-			mode = newMode;
-		}
+		void setMode (long newMode);	// also switches the peer timeouts (loose while loading, tight in mission)
 
 		VersionStatus getVersionStatus (void) {
 			return(versionStatus);	// MP-1: GOOD on host, UNKNOWN on a client until the host answers
@@ -1630,6 +1628,7 @@ class MultiPlayer {
 		void applyKillLoss (long killerCID, long loserCID);
 		void applyReinforcement (MCMSG_Reinforcement* msg, bool fromNetwork);
 		void assignReinforcementSlot (MCMSG_Reinforcement* msg);
+		void resetModeState (void);	// mode bookkeeping (hold time, HQ owners at start)
 
 		void addToPlayerMoverRoster (long playerCommanderID, MoverPtr mover);
 
