@@ -8,43 +8,19 @@
 
 // string functions to use in cross-platform environment
 
+// The hand-rolled versions returned 0 ("equal") whenever the first
+// differing char of s1 was lower than s2's, so e.g.
+// S_strncmp("fusion engine", "vehicle", 7) matched.
 int S_strcmp(const char* s1, const char* s2)
 {
 	assert(s1 && s2);
-
-	int c1, c2, d;
-	do {
-		c1 = *s1++;
-		c2 = *s2++;
-		d = c1 - c2;
-		if(d) {
-			return ((d&0x70000000)>>30) - 1;
-		}
-	} while(c1);
-
-	return 0;
+	return strcmp(s1, s2);
 }
 
 int S_strncmp(const char* s1, const char* s2, size_t max_count)
 {
 	assert(s1 && s2);
-
-	int c1, c2, d;
-	do {
-
-		if(!max_count--)
-			return 0;
-
-		c1 = *s1++;
-		c2 = *s2++;
-		d = c1 - c2;
-		if(d) {
-			return ((d&0x70000000)>>30) - 1;
-		}
-	} while(c1);
-
-	return 0;
-
+	return strncmp(s1, s2, max_count);
 }
 
 int S_stricmp(const char* s1, const char* s2)
