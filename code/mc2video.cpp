@@ -8,6 +8,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <algorithm>   // std::min
+#include <deque>
 
 #include "file.h"   // fileExists
 #include "gameos.hpp"  // gos_NewEmptyTexture, gos_DestroyTexture, gos_Texture_Alpha, RECT_TEX, gosHint_DisableMipmap, DWORD
@@ -218,6 +219,14 @@ struct VideoSession {
     int              aOutRate     = 0;
     int              aOutChannels = 0;
     bool             audioStreamStarted = false;
+    long long        aPushedFrames = 0;   // PCM frames handed to the mixer ring
+
+    // Read-ahead: video packets demuxed while pulling audio ahead of the
+    // picture. Encoders commonly store ~1 s of video before the first
+    // audio packet, so audio must be read ahead or it starts late.
+    std::deque<AVPacket*> vQueue;
+    bool             demuxEOF = false;
+    bool             vFlushed = false;
 
     // Audio-master clock — Task 13
     bool             audioStallLogged = false;
@@ -266,16 +275,19 @@ static bool tryOpenEmbeddedAudio(VideoSession* s)
 
     AVStream* ast = s->fmt->streams[s->aStream];
     const AVCodec* ac = avcodec_find_decoder(ast->codecpar->codec_id);
-    if (!ac) { s->aStream = -1; return false; }
+    if (!ac) { VIDEO_LOG("audio: no decoder for embedded stream"); s->aStream = -1; return false; }
 
     s->aCodec = avcodec_alloc_context3(ac);
     avcodec_parameters_to_context(s->aCodec, ast->codecpar);
 
     SoundSystem* snd = reinterpret_cast<SoundSystem*>(soundSystem);
-    if (avcodec_open2(s->aCodec, ac, nullptr) != 0 ||
-        !snd ||
-        !snd->queryNativeFormat(&s->aOutRate, &s->aOutChannels))
+    const char* why = nullptr;
+    if (avcodec_open2(s->aCodec, ac, nullptr) != 0)                       why = "decoder open failed";
+    else if (!snd)                                                        why = "no sound system yet";
+    else if (!snd->queryNativeFormat(&s->aOutRate, &s->aOutChannels))     why = "mixer not open";
+    if (why)
     {
+        VIDEO_LOG("audio: embedded unavailable (%s)", why);
         if (s->aCodec) { avcodec_free_context(&s->aCodec); s->aCodec = nullptr; }
         s->aStream = -1;
         return false;
@@ -303,6 +315,7 @@ static bool tryOpenEmbeddedAudio(VideoSession* s)
     }
 
     if (!snd->beginVideoPCMStream(s->aOutRate, s->aOutChannels)) {
+        VIDEO_LOG("audio: embedded unavailable (mixer busy or format mismatch)");
         swr_free(&s->swr);
         avcodec_free_context(&s->aCodec);
         s->aCodec = nullptr;
@@ -428,7 +441,7 @@ VideoSession* video_open(const VideoOpenParams& p, VideoOpenResult* out)
             if (!sidecarOK) {
                 embeddedOK = tryOpenEmbeddedAudio(s);
                 if (!embeddedOK) {
-                    VIDEO_LOG("audio: sidecar and embedded both unavailable; silent video");
+                    VIDEO_LOG("audio: sidecar and embedded both unavailable for '%s'; silent video", p.resolvedPath);
                 }
             }
         } else {
@@ -436,7 +449,7 @@ VideoSession* video_open(const VideoOpenParams& p, VideoOpenResult* out)
             if (!embeddedOK) {
                 sidecarOK = tryStartSidecarWAV(p.waveFileShortName);
                 if (!sidecarOK) {
-                    VIDEO_LOG("audio: embedded and sidecar both unavailable; silent video");
+                    VIDEO_LOG("audio: embedded and sidecar both unavailable for '%s'; silent video", p.resolvedPath);
                 }
             }
         }
@@ -483,6 +496,8 @@ void video_close(VideoSession* s)
     if (s->vCodec)  { avcodec_free_context(&s->vCodec); }
     if (s->aCodec)  { avcodec_free_context(&s->aCodec); }
     if (s->swr)     { swr_free(&s->swr); }
+    for (AVPacket* q : s->vQueue) av_packet_free(&q);
+    s->vQueue.clear();
     if (s->fmt)     { avformat_close_input(&s->fmt); }
     delete s;
 }
@@ -542,67 +557,121 @@ static int logOnceDecodeError(VideoSession* s, const char* where, int ret)
     return -1;
 }
 
+// Decode one demuxed audio packet (in s->pkt) and push its PCM to the mixer.
+static void pushAudioPacket(VideoSession* s)
+{
+    int sendRet = avcodec_send_packet(s->aCodec, s->pkt);
+    if (sendRet < 0 && sendRet != AVERROR_INVALIDDATA) {
+        // Unrecoverable send failure — stall the audio clock.
+        markAudioStalled(s, "avcodec_send_packet error");
+    }
+    AVFrame* af = av_frame_alloc();
+    while (avcodec_receive_frame(s->aCodec, af) == 0) {
+        int outSamplesMax = (int)av_rescale_rnd(
+            swr_get_delay(s->swr, s->aCodec->sample_rate) + af->nb_samples,
+            s->aOutRate, s->aCodec->sample_rate, AV_ROUND_UP);
+        int outBytes = av_samples_get_buffer_size(
+            nullptr, s->aOutChannels, outSamplesMax, AV_SAMPLE_FMT_S16, 1);
+        uint8_t* outBuf = (uint8_t*)av_malloc(outBytes);
+        uint8_t* outPtr = outBuf;
+        int outSamples = swr_convert(s->swr, &outPtr, outSamplesMax,
+                                     (const uint8_t**)af->data, af->nb_samples);
+        if (outSamples < 0) {
+            // swr_convert failure — stall the audio clock.
+            av_free(outBuf);
+            markAudioStalled(s, "swr_convert error");
+            break;
+        }
+        if (outSamples > 0 && soundSystem) {
+            reinterpret_cast<SoundSystem*>(soundSystem)->pushVideoPCMSamples(
+                (const int16_t*)outBuf, outSamples);
+            s->aPushedFrames += outSamples;
+        }
+        av_free(outBuf);
+    }
+    // EAGAIN is normal backpressure; EOF is end-of-stream — neither is a stall.
+    av_frame_free(&af);
+}
+
+// Demux one packet: video goes to the read-ahead queue, audio is decoded
+// and pushed straight to the mixer. Sets demuxEOF at end of file or error.
+static void readOnePacket(VideoSession* s)
+{
+    int ret = av_read_frame(s->fmt, s->pkt);
+    if (ret < 0) {
+        if (ret != AVERROR_EOF) logOnceDecodeError(s, "av_read_frame", ret);
+        s->demuxEOF = true;
+        return;
+    }
+    if (s->pkt->stream_index == s->vStream) {
+        AVPacket* q = av_packet_alloc();
+        av_packet_move_ref(q, s->pkt);
+        s->vQueue.push_back(q);
+    } else if (s->pkt->stream_index == s->aStream && s->aCodec && s->swr) {
+        pushAudioPacket(s);
+    }
+    av_packet_unref(s->pkt);
+}
+
+static bool audioDriven(const VideoSession* s)
+{
+    return s->aCodec && s->swr && s->aStream >= 0 && s->audioStreamStarted && !s->audioStallLogged;
+}
+
+static double audioBufferedSeconds(const VideoSession* s)
+{
+    int rate = s->aOutRate > 0 ? s->aOutRate : 44100;
+    return (double)s->aPushedFrames / (double)rate - audioMasterClock(s);
+}
+
+// Keep kAudioLeadSec of decoded audio queued in the mixer ring (2 s cap)
+// so the audio clock never starves while video packets sit ahead of their
+// audio in the file.
+static void fillAudioAhead(VideoSession* s)
+{
+    const double kAudioLeadSec = 0.5;
+    const size_t kMaxQueuedVideoPackets = 512;  // bound memory if audio is sparse
+    if (!audioDriven(s)) return;
+    while (!s->demuxEOF && s->vQueue.size() < kMaxQueuedVideoPackets &&
+           audioBufferedSeconds(s) < kAudioLeadSec)
+        readOnePacket(s);
+    // Audio track ended (it can be shorter than the video): the audio clock
+    // stops advancing, so hand the rest of the movie to the wall clock.
+    if (s->demuxEOF && audioBufferedSeconds(s) <= 0.0)
+        markAudioStalled(s, "audio track ended");
+}
+
 //-----------------------------------------------------------------------------
 // Decode-one-frame helper
-// Pulls packets and decodes until one video frame is produced in
-// s->vFrame, or EOF. Returns: 1 = frame produced, -1 = EOF/error.
-// Audio packets are discarded until Task 12 adds handling.
+// Feeds queued (or freshly demuxed) video packets to the decoder until one
+// video frame is produced in s->vFrame. Returns: 1 = frame, -1 = EOF/error.
 //-----------------------------------------------------------------------------
 static int decodeNextVideoFrame(VideoSession* s)
 {
     for (;;) {
         int ret = avcodec_receive_frame(s->vCodec, s->vFrame);
         if (ret == 0) return 1;
-        if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF) return logOnceDecodeError(s, "avcodec_receive_frame", ret);
+        if (ret == AVERROR_EOF) return -1;
+        if (ret != AVERROR(EAGAIN)) return logOnceDecodeError(s, "avcodec_receive_frame", ret);
 
         // Need more input
-        ret = av_read_frame(s->fmt, s->pkt);
-        if (ret == AVERROR_EOF) {
-            avcodec_send_packet(s->vCodec, nullptr);  // flush
-            ret = avcodec_receive_frame(s->vCodec, s->vFrame);
-            if (ret == 0) return 1;
-            if (ret != AVERROR(EAGAIN) && ret != AVERROR_EOF)
-                return logOnceDecodeError(s, "avcodec_receive_frame(flush)", ret);
-            return -1;
+        if (s->vQueue.empty() && !s->demuxEOF) {
+            readOnePacket(s);
+            continue;
         }
-        if (ret < 0) return logOnceDecodeError(s, "av_read_frame", ret);
-
-        if (s->pkt->stream_index == s->vStream) {
-            avcodec_send_packet(s->vCodec, s->pkt);
-        } else if (s->pkt->stream_index == s->aStream && s->aCodec && s->swr) {
-            int sendRet = avcodec_send_packet(s->aCodec, s->pkt);
-            if (sendRet < 0 && sendRet != AVERROR_INVALIDDATA) {
-                // Unrecoverable send failure — stall the audio clock.
-                markAudioStalled(s, "avcodec_send_packet error");
-            }
-            AVFrame* af = av_frame_alloc();
-            int recvRet;
-            while ((recvRet = avcodec_receive_frame(s->aCodec, af)) == 0) {
-                int outSamplesMax = (int)av_rescale_rnd(
-                    swr_get_delay(s->swr, s->aCodec->sample_rate) + af->nb_samples,
-                    s->aOutRate, s->aCodec->sample_rate, AV_ROUND_UP);
-                int outBytes = av_samples_get_buffer_size(
-                    nullptr, s->aOutChannels, outSamplesMax, AV_SAMPLE_FMT_S16, 1);
-                uint8_t* outBuf = (uint8_t*)av_malloc(outBytes);
-                uint8_t* outPtr = outBuf;
-                int outSamples = swr_convert(s->swr, &outPtr, outSamplesMax,
-                                             (const uint8_t**)af->data, af->nb_samples);
-                if (outSamples < 0) {
-                    // swr_convert failure — stall the audio clock.
-                    av_free(outBuf);
-                    markAudioStalled(s, "swr_convert error");
-                    break;
-                }
-                if (outSamples > 0 && soundSystem) {
-                    reinterpret_cast<SoundSystem*>(soundSystem)->pushVideoPCMSamples(
-                        (const int16_t*)outBuf, outSamples);
-                }
-                av_free(outBuf);
-            }
-            // EAGAIN is normal backpressure; EOF is end-of-stream — neither is a stall.
-            av_frame_free(&af);
+        if (!s->vQueue.empty()) {
+            AVPacket* q = s->vQueue.front();
+            s->vQueue.pop_front();
+            avcodec_send_packet(s->vCodec, q);
+            av_packet_free(&q);
+            continue;
         }
-        av_packet_unref(s->pkt);
+        if (!s->vFlushed) {
+            avcodec_send_packet(s->vCodec, nullptr);  // drain buffered frames
+            s->vFlushed = true;
+            continue;
+        }
+        return -1;
     }
 }
 
@@ -644,7 +713,11 @@ bool video_update(VideoSession* s)
     if (!s || s->eof) return true;
     if (s->paused) return false;
 
+    fillAudioAhead(s);
     const double masterNow = videoMasterClock(s);
+    if (s_videoTrace && audioDriven(s) && (int)masterNow != (int)s->presentedPTS)
+        VIDEO_TRACE("sync: clock=%.2f video=%.2f audioBuffered=%.2f queuedVideo=%zu",
+                    masterNow, s->presentedPTS, audioBufferedSeconds(s), s->vQueue.size());
 
     // Step A: if we have a pending frame, check whether it is now due.
     if (s->pendingFrameValid) {
@@ -792,6 +865,11 @@ void video_restart(VideoSession* s)
     }
     if (s->vCodec) avcodec_flush_buffers(s->vCodec);
     if (s->aCodec) avcodec_flush_buffers(s->aCodec);
+    for (AVPacket* q : s->vQueue) av_packet_free(&q);
+    s->vQueue.clear();
+    s->demuxEOF = false;
+    s->vFlushed = false;
+    s->aPushedFrames = 0;
     s->eof = false;
     s->paused = false;
     s->frameReady = false;

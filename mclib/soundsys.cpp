@@ -68,6 +68,7 @@ namespace {
     {
         int16_t* out = (int16_t*)stream;
         int outSamples = len / (int)sizeof(int16_t);
+        int realSamples = 0;
         SDL_AtomicLock(&g_va.lock);
         for (int i = 0; i < outSamples; ++i) {
             if (g_va.tail == g_va.head) {
@@ -75,12 +76,17 @@ namespace {
             } else {
                 out[i] = g_va.ring[g_va.tail];
                 g_va.tail = (g_va.tail + 1) % g_va.cap;
+                ++realSamples;
             }
         }
         SDL_AtomicUnlock(&g_va.lock);
+        // Count only samples that came from the ring. The video clock is
+        // built on this counter; counting underrun silence would let the
+        // clock run ahead of the audio actually heard, and the audio would
+        // stay behind the picture for the rest of the movie.
         int framesWritten = (g_va.channels > 0)
-                             ? (outSamples / g_va.channels)
-                             : outSamples;
+                             ? (realSamples / g_va.channels)
+                             : realSamples;
         SDL_AtomicAdd(&g_va.consumedFrames, framesWritten);
     }
 } // namespace
