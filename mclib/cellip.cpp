@@ -54,10 +54,13 @@ EllipseElement::EllipseElement (Stuff::Vector2DOf<long> &cntr, Stuff::Vector2DOf
 //---------------------------------------------------------------------------
 void EllipseElement::draw (void)
 {
-	gos_SetRenderState( gos_State_Filter, gos_FilterNone );
+	// ring.tga is a 1-2 texel antialiased line with alpha mostly under 50%.
+	// The port's alpha test discards alpha < 0.5, which broke the sensor ring
+	// into dots; blend the full alpha and filter it instead.
+	gos_SetRenderState( gos_State_Filter, gos_FilterBiLinear );
 	gos_SetRenderState( gos_State_AlphaMode, gos_Alpha_AlphaInvAlpha );
 
-	gos_SetRenderState( gos_State_AlphaTest, true );
+	gos_SetRenderState( gos_State_AlphaTest, false );
 			
 	DWORD gosTextureHandle = mcTextureManager->get_gosTextureHandle (s_textureHandle);
 	gos_SetRenderState( gos_State_Texture, gosTextureHandle );

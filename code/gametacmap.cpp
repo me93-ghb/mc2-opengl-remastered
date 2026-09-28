@@ -213,20 +213,46 @@ void GameTacMap::render()
 		count++;
 	}
 
-	// Surgical Phase-1 carve-out 2026-05-19: the broken viewport-rect
-	// overlay block that used to live here (4x inverseProjectForPicking +
-	// worldToTacMap + gos_DrawQuads trapezoid) is killed (the camera
-	// vertices are broken; the chain inverseProjectForPicking ->
-	// inverseProjectZ -> setInverseProject is being retired in Phases 2-5).
-	// HOWEVER these 13 gos_SetRenderState calls are PRESERVED: they were
-	// inside the deleted block but their effect on GPU state is inherited
-	// by every renderer that runs after GameTacMap::render() (gos render
-	// state is sticky across calls; see memory/blend_state_inheritance_in_
-	// post_process.md). Deleting them caused mech-invisible + terrain-
-	// texture-tiling regressions because next-frame 3D rendering inherited
-	// AlphaMode=OneZero / Filter=None / unset TextureAddress instead of
-	// AlphaInvAlpha / BiLinear / Wrap. The state setup STAYS even though
-	// it no longer prefaces a draw within this function.
+	// The little yellow viewing rect. Retail inverse-projected four screen
+	// points with eye->inverseProjectZ, which the port retired. Instead, solve
+	// each screen corner against the ground plane with the forward
+	// world-to-clip matrix the GPU renders with.
+	// ponytail: flat ground plane at the camera focus elevation; hills tilt
+	// the real footprint a little, raycast the heightfield if that shows.
+	bool viewRectOk = (eye != NULL && land != NULL);
+	if ( viewRectOk )
+	{
+		const Stuff::Matrix4D M = eye->worldToClipGL();
+		Stuff::Vector3D focus = eye->getPosition();
+		const float h = land->getTerrainElevation( focus );
+		float vmx, vmy, vax, vay;
+		gos_GetViewport( &vmx, &vmy, &vax, &vay );
+
+		// Same screen points as retail: top edge and 2/3 down, left and right.
+		const float px[4] = { vax + 1.f, vax + 1.f, vax + vmx - 1.f, vax + vmx - 1.f };
+		const float py[4] = { vay + 1.f, vay + vmy * 0.6667f - 1.f, vay + vmy * 0.6667f - 1.f, vay + 1.f };
+		for ( int c = 0; c < 4 && viewRectOk; ++c )
+		{
+			const float nx = 2.f * (px[c] - vax) / vmx - 1.f;
+			const float ny = 1.f - 2.f * (py[c] - vay) / vmy;
+			// clip = X*M(0,.) + Y*M(1,.) + h*M(2,.) + M(3,.); ndc = clip.xy / clip.w
+			const float a1 = M(0,0) - nx * M(0,3), b1 = M(1,0) - nx * M(1,3);
+			const float c1 = -( h * (M(2,0) - nx * M(2,3)) + M(3,0) - nx * M(3,3) );
+			const float a2 = M(0,1) - ny * M(0,3), b2 = M(1,1) - ny * M(1,3);
+			const float c2 = -( h * (M(2,1) - ny * M(2,3)) + M(3,1) - ny * M(3,3) );
+			const float det = a1 * b2 - a2 * b1;
+			if ( fabs( det ) < 1e-12f ) { viewRectOk = false; break; }
+			Stuff::Vector3D world;
+			world.x = (c1 * b2 - c2 * b1) / det;
+			world.y = (a1 * c2 - a2 * c1) / det;
+			world.z = h;
+			// Corner above the horizon: the ray never reaches the ground.
+			const float w = world.x * M(0,3) + world.y * M(1,3) + h * M(2,3) + M(3,3);
+			if ( w <= 0.f ) { viewRectOk = false; break; }
+			worldToTacMap( world, corners[c] );
+		}
+	}
+
 	gos_SetRenderState( gos_State_AlphaMode, gos_Alpha_AlphaInvAlpha);
 	gos_SetRenderState( gos_State_ShadeMode, gos_ShadeGouraud);
 	gos_SetRenderState( gos_State_MonoEnable, 0);
@@ -240,6 +266,23 @@ void GameTacMap::render()
 	gos_SetRenderState( gos_State_TextureAddress, gos_TextureWrap );
 	gos_SetRenderState( gos_State_ZCompare, 0);
 	gos_SetRenderState( gos_State_ZWrite, 0);
+
+	if ( viewRectOk )
+	{
+		for ( int c = 0; c < 4; ++c )
+		{
+			corners[c].argb = 0xffffffff;
+			corners[c].frgb = 0;
+			corners[c].rhw = 1.0f;
+			corners[c].z = 0.0f;
+		}
+		corners[0].u = corners[1].u = 0.078125f;
+		corners[3].u = corners[2].u = .99875f;
+		corners[0].v = corners[3].v = 0.078125f;
+		corners[1].v = corners[2].v = .99875f;
+		gos_SetRenderState( gos_State_Texture, mcTextureManager->get_gosTextureHandle( viewRectHandle ) );
+		gos_DrawQuads( &corners[0], 4 );
+	}
 
 	unsigned long colors[MAX_MOVERS];
 	unsigned long ringColors[MAX_MOVERS];
