@@ -253,8 +253,11 @@ void main() {
     // The shared edge then samples the SAME (coarse) line from both sides, so the
     // fine intermediate vertices lie exactly on the coarse segment -> no T-junction
     // crack. Corners sit at offset 0 (coarse-aligned) so they are never moved.
-    // Skirt verts (isSkirtFlag != 0) are left alone — they are the vertical seal.
-    if (isSkirtFlag == 0 && u_edgeStitch != 0) {
+    // Skirt verts are stitched too, so the skirt hangs exactly u_skirtDepth below the
+    // shared coarse line. Unstitched, a skirt bottom (raw - depth) can sit ABOVE its
+    // stitched top where the raw edge rises over the coarse line, folding the skirt
+    // into a dark sheet standing on the seam.
+    if (u_edgeStitch != 0) {
         int  Sc = 0, along = 0;
         bool alongX = true;
         if      (localOffset.y == 0            && ((u_edgeStitch)       & 0xFF) > 0) { Sc = (u_edgeStitch)       & 0xFF; along = localOffset.x; alongX = true;  } // N
@@ -292,7 +295,7 @@ void main() {
     // sampleH -> here from heightsFine at the corresponding integer bake index),
     // so shared edges with ANY neighbour band (LOD0 fine-corner-pinned or another
     // coarse band) still agree by construction -- zero new crack risk introduced.
-    if (u_visualDisplace == 2 && isSkirtFlag == 0) {
+    if (u_visualDisplace == 2) {  // skirts too: the bottom must follow the displaced top
         float kFar2 = clamp(u_visualDisplaceFar, 0.0, 1.0);
         // Re-derive the same edge-stitch decision to pick between a single bake
         // sample (interior / non-stitched) and a bake-based mix (stitched edge),
@@ -348,8 +351,8 @@ void main() {
             // away (silhouette-LOSS fix, recon sec 3/4b). Perimeter verts
             // (localOffset on the block edge — includes every stitched vert)
             // are EXCLUDED and keep the S2 sample above: both sides of every
-            // seam read identical values, zero new crack risk. Skirts never
-            // reach here (mode-2 branch already gates isSkirtFlag==0).
+            // seam read identical values, zero new crack risk. Skirt verts are
+            // perimeter verts too, so onPerim keeps them on the S2 sample.
             bool onPerim = (localOffset.x == 0 || localOffset.x == u_quadCountX ||
                             localOffset.y == 0 || localOffset.y == u_quadCountY);
             if (u_geomorphMips == 1 && !onPerim && u_lodStep > 1) {

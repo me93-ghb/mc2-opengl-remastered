@@ -837,12 +837,23 @@ extern void   gos_GetTerrainLightDir(float* x, float* y, float* z);
 // IBO contains uint16_t triangle indices.
 // ---------------------------------------------------------------------------
 
+// One vertex layout for the surface patch AND the skirt strips: (lx, ly) grid
+// offset from the block origin, isSkirt (0 = surface, 1 = skirt bottom), pad.
+// Surface vertices carry isSkirt = 0 rather than leaving attribute 1 disabled:
+// the surface and skirt draws then share one vertex-input configuration and
+// differ only in the bound buffers. On the macOS Zink -> kosmickrisp stack a
+// per-draw attribute-layout switch inside the terrain pass produced skirt
+// pipelines whose depth test did not match the surface pipelines, so skirts
+// hanging below a continuous surface were drawn over it (the terrain "tears").
+struct TerrainLodVertex { int16_t lx, ly, isSkirt, _pad; };
+static_assert(sizeof(TerrainLodVertex) == 8, "TerrainLodVertex must be 8 bytes");
+
 struct PatchShape {
-    GLuint vbo;          // main patch: int16_t[2] (lx, ly) per vertex
+    GLuint vbo;          // main patch: TerrainLodVertex per vertex (isSkirt = 0)
     GLuint ibo;          // main patch: uint16_t triangle indices
     int    vertexCount;
     int    indexCount;
-    GLuint skirtVbo;     // Phase 6: int16_t[4] (lx, ly, isSkirt, _pad) per skirt vertex
+    GLuint skirtVbo;     // Phase 6: TerrainLodVertex per skirt vertex (isSkirt 0 = top, 1 = bottom)
     GLuint skirtIbo;     // Phase 6: uint16_t triangle indices for skirts
     int    skirtVertexCount;
     int    skirtIndexCount;
@@ -913,12 +924,11 @@ static const PatchShape& getOrBuildPatch(int qcX, int qcY, int lodStep,
     auto xs = makeSamplePositions(qcX, lodStep);
     auto ys = makeSamplePositions(qcY, lodStep);
 
-    struct LocalVertex { int16_t lx, ly; };
-    std::vector<LocalVertex> verts;
+    std::vector<TerrainLodVertex> verts;
     verts.reserve(xs.size() * ys.size());
     for (int yy : ys)
         for (int xx : xs)
-            verts.push_back({(int16_t)xx, (int16_t)yy});
+            verts.push_back({(int16_t)xx, (int16_t)yy, 0, 0});
 
     // Two CCW triangles per quad cell.
     //   FIXED / BOTTOMRIGHT (TL-BR diagonal): {TL,BL,BR} + {TL,BR,TR}
@@ -965,7 +975,7 @@ static const PatchShape& getOrBuildPatch(int qcX, int qcY, int lodStep,
     glGenBuffers(1, &ps.vbo);
     glBindBuffer(GL_ARRAY_BUFFER, ps.vbo);
     glBufferData(GL_ARRAY_BUFFER,
-                 (GLsizeiptr)(verts.size() * sizeof(LocalVertex)),
+                 (GLsizeiptr)(verts.size() * sizeof(TerrainLodVertex)),
                  verts.data(), GL_STATIC_DRAW);
 
     glGenBuffers(1, &ps.ibo);
@@ -979,13 +989,12 @@ static const PatchShape& getOrBuildPatch(int qcX, int qcY, int lodStep,
 
     // -----------------------------------------------------------------------
     // Phase 6: Build skirt geometry — four edge strips, each a quad-strip.
-    // SkirtVertex: lx, ly, isSkirt (0=surface, 1=below), _pad.
+    // TerrainLodVertex: lx, ly, isSkirt (0=surface, 1=below), _pad.
     // The vertex shader reads isSkirt and applies: h -= isSkirt * u_skirtDepth.
     // Winding is CCW viewed from outside; backface culling is disabled during
     // skirt draws so winding does not need to be perfect in this first pass.
     // -----------------------------------------------------------------------
-    struct SkirtVertex { int16_t lx, ly, isSkirt, _pad; };
-    std::vector<SkirtVertex> skirtVerts;
+    std::vector<TerrainLodVertex> skirtVerts;
     std::vector<uint16_t>    skirtIdx;
 
     // Each edge strip has 2 * edgeLen vertices.
@@ -1016,10 +1025,10 @@ static const PatchShape& getOrBuildPatch(int qcX, int qcY, int lodStep,
     };
 
     // Phase 10.2b: record each edge's index range (build order N,S,W,E).
-    ps.skirtEdgeOffset[0] = (int)skirtIdx.size(); buildEdge(xs, (int)ys.front(), false); ps.skirtEdgeCount[0] = (int)skirtIdx.size() - ps.skirtEdgeOffset[0]; // North (y=ys[0])
-    ps.skirtEdgeOffset[1] = (int)skirtIdx.size(); buildEdge(xs, (int)ys.back(),  false); ps.skirtEdgeCount[1] = (int)skirtIdx.size() - ps.skirtEdgeOffset[1]; // South (y=ys.back)
-    ps.skirtEdgeOffset[2] = (int)skirtIdx.size(); buildEdge(ys, (int)xs.front(), true ); ps.skirtEdgeCount[2] = (int)skirtIdx.size() - ps.skirtEdgeOffset[2]; // West  (x=xs[0])
-    ps.skirtEdgeOffset[3] = (int)skirtIdx.size(); buildEdge(ys, (int)xs.back(),  true ); ps.skirtEdgeCount[3] = (int)skirtIdx.size() - ps.skirtEdgeOffset[3]; // East  (x=xs.back)
+    ps.skirtEdgeOffset[0] = (int)skirtIdx.size(); buildEdge(xs, (int)ys.front(), true ); ps.skirtEdgeCount[0] = (int)skirtIdx.size() - ps.skirtEdgeOffset[0]; // North (y=ys[0])
+    ps.skirtEdgeOffset[1] = (int)skirtIdx.size(); buildEdge(xs, (int)ys.back(),  true ); ps.skirtEdgeCount[1] = (int)skirtIdx.size() - ps.skirtEdgeOffset[1]; // South (y=ys.back)
+    ps.skirtEdgeOffset[2] = (int)skirtIdx.size(); buildEdge(ys, (int)xs.front(), false); ps.skirtEdgeCount[2] = (int)skirtIdx.size() - ps.skirtEdgeOffset[2]; // West  (x=xs[0])
+    ps.skirtEdgeOffset[3] = (int)skirtIdx.size(); buildEdge(ys, (int)xs.back(),  false); ps.skirtEdgeCount[3] = (int)skirtIdx.size() - ps.skirtEdgeOffset[3]; // East  (x=xs.back)
 
     ps.skirtVertexCount = (int)skirtVerts.size();
     ps.skirtIndexCount  = (int)skirtIdx.size();
@@ -1027,7 +1036,7 @@ static const PatchShape& getOrBuildPatch(int qcX, int qcY, int lodStep,
     glGenBuffers(1, &ps.skirtVbo);
     glBindBuffer(GL_ARRAY_BUFFER, ps.skirtVbo);
     glBufferData(GL_ARRAY_BUFFER,
-                 (GLsizeiptr)(skirtVerts.size() * sizeof(SkirtVertex)),
+                 (GLsizeiptr)(skirtVerts.size() * sizeof(TerrainLodVertex)),
                  skirtVerts.data(), GL_STATIC_DRAW);
 
     glGenBuffers(1, &ps.skirtIbo);
@@ -2444,8 +2453,8 @@ void gos_TerrainLodChunk_SubmitDrawCommands(
             glUniform1i(s_locLodStep, cmd.lodStep);  // Phase 5: LOD band for debug vis
 
         // Phase 10.4: edge stitching. Block quad extent (for edge detection) +
-        // packed coarser-neighbour stride per edge. Skirt verts (isSkirtFlag!=0)
-        // skip the snap in the vert, so this is safe to set once per block.
+        // packed coarser-neighbour stride per edge. Skirt verts snap with their
+        // edge (same rule, same line), so this is set once per block.
         // u_quadCount* must be the MAX localOffset the patch actually emits, which
         // makeSamplePositions caps at the last multiple of lodStep <= quad count.
         // (For partial map-edge blocks qcX may not be a multiple of lodStep.)
@@ -2467,11 +2476,14 @@ void gos_TerrainLodChunk_SubmitDrawCommands(
         if (s_locSkirtDepth >= 0)
             glUniform1f(s_locSkirtDepth, 0.0f);
 
-        // Attrib 0: ivec2 localOffset. Attrib 1 (isSkirt) left disabled -> reads as 0.
-        glDisableVertexAttribArray(1);
+        // Attrib 0: ivec2 localOffset. Attrib 1: isSkirt, 0 for every surface
+        // vertex. Same layout and enable set as the skirt draw below, so the two
+        // draws differ only in the bound buffers (see TerrainLodVertex).
         glBindBuffer(GL_ARRAY_BUFFER, patch.vbo);
         glEnableVertexAttribArray(0);
-        glVertexAttribIPointer(0, 2, GL_SHORT, (GLsizei)(2 * sizeof(int16_t)), (const void*)0);
+        glVertexAttribIPointer(0, 2, GL_SHORT, (GLsizei)sizeof(TerrainLodVertex), (const void*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribIPointer(1, 1, GL_SHORT, (GLsizei)sizeof(TerrainLodVertex), (const void*)(2 * sizeof(int16_t)));
 
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, patch.ibo);
 
@@ -2522,13 +2534,10 @@ void gos_TerrainLodChunk_SubmitDrawCommands(
                     glUniform1f(s_locSkirtDepth, skirtDepth);
 
                 // (GL_CULL_FACE already disabled for the whole draw — see top.)
-                // Attrib 0: lx, ly (first 2 int16_t of SkirtVertex, stride=8).
-                // Attrib 1: isSkirt (third int16_t of SkirtVertex, offset=4).
+                // Same TerrainLodVertex layout as the surface draw above.
                 glBindBuffer(GL_ARRAY_BUFFER, patch.skirtVbo);
-                glEnableVertexAttribArray(0);
-                glVertexAttribIPointer(0, 2, GL_SHORT, (GLsizei)(4 * sizeof(int16_t)), (const void*)0);
-                glEnableVertexAttribArray(1);
-                glVertexAttribIPointer(1, 1, GL_SHORT, (GLsizei)(4 * sizeof(int16_t)), (const void*)(2 * sizeof(int16_t)));
+                glVertexAttribIPointer(0, 2, GL_SHORT, (GLsizei)sizeof(TerrainLodVertex), (const void*)0);
+                glVertexAttribIPointer(1, 1, GL_SHORT, (GLsizei)sizeof(TerrainLodVertex), (const void*)(2 * sizeof(int16_t)));
 
                 glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, patch.skirtIbo);
                 // Phase 10.2b: draw ONLY the edges flagged in the per-block mask
@@ -2540,8 +2549,6 @@ void gos_TerrainLodChunk_SubmitDrawCommands(
                     glDrawElements(GL_TRIANGLES, patch.skirtEdgeCount[e], GL_UNSIGNED_SHORT,
                                    (const void*)(size_t)(patch.skirtEdgeOffset[e] * sizeof(uint16_t)));
                 }
-
-                glDisableVertexAttribArray(1);
             }
         }
     }
