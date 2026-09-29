@@ -1591,6 +1591,8 @@ void BldgAppearance::setObjStatus (long oStatus)
 		{
 			if (appearType->bldgDmgShape)
 			{
+				// Unregister before freeing: a new shape at the same address would pass IsStaticNow() and replay the old model.
+				invalidateStaticRegistration();
 				if (bldgShape)
 				{
 					bldgShape->ClearAnimation();
@@ -1614,6 +1616,8 @@ void BldgAppearance::setObjStatus (long oStatus)
 		{
 			if (appearType->bldgShape[0])
 			{
+				// Unregister before freeing: a new shape at the same address would pass IsStaticNow() and replay the old model.
+				invalidateStaticRegistration();
 				if (bldgShape)
 				{
 					bldgShape->ClearAnimation();
@@ -5937,6 +5941,8 @@ void TreeAppearance::setObjStatus (long oStatus)
 		{
 			if (appearType->treeDmgShape)
 			{
+				// Unregister before freeing: a new shape at the same address would pass IsStaticNow() and replay the old model.
+				invalidateStaticRegistration();
 				if (treeShape)
 				{
 					treeShape->ClearAnimation();
@@ -5954,6 +5960,8 @@ void TreeAppearance::setObjStatus (long oStatus)
 		{
 			if (appearType->treeShape[0])
 			{
+				// Unregister before freeing: a new shape at the same address would pass IsStaticNow() and replay the old model.
+				invalidateStaticRegistration();
 				if (treeShape)
 				{
 					treeShape->ClearAnimation();
