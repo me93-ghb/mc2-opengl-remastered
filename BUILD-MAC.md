@@ -68,8 +68,15 @@ Useful knobs:
 
 The startup line `WARNING: ... doesn't support base Zink requirements: have_EXT_custom_border_color` is expected; the script overrides the reported GL version to 4.6 to get past it.
 
-`dev/mc2app.env` is the env file for an optional `~/Applications/MC2.app` wrapper used by desktop-automation tooling.
-You do not need it to play.
+To play from the Dock, Spotlight or Launchpad, install `~/Applications/MC2.app` once:
+
+```bash
+dev/macos-make-app.sh
+```
+
+Each launch runs `dev/macos-play.sh`: it rebuilds `build-mac/mc2` if the code changed (a few seconds when nothing did), then starts the game in a window.
+If the build fails it offers to play the last good build or show `/tmp/mc2-build.log`.
+Game settings for the app are in `dev/mc2app.env`; the session log goes to `/tmp/mc2app.log`.
 
 ## 5. What is not on macOS
 
