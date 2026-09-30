@@ -31,6 +31,7 @@
 #include"lz.h"
 
 #include<zlib.h>
+#include<mutex>
 
 #include"platform_windows.h"
 #include"platform_io.h"
@@ -53,6 +54,12 @@ char MissingTitleString[256];
 //---------------------------------------------------------------------------
 //	class FastFile member functions
 //---------------------------------------------------------------------------
+// One lock for every archive: the per-archive FILE* is seeked and read in
+// place and LZPacketBuffer is shared, so concurrent readers (the parallel
+// chassis parse in LogisticsData::initVariants, the background startup init)
+// otherwise inflate each other's bytes.
+static std::mutex s_fastFileLock;
+
 void *FastFile::operator new (size_t mySize)
 {
 	void *result = NULL;
@@ -360,6 +367,7 @@ long FastFile::reserve(int num_files)
 //---------------------------------------------------------------------------
 long FastFile::openFast (DWORD hash, const char *fName)
 {
+	std::lock_guard<std::mutex> lock(s_fastFileLock);
 	//------------------------------------------------------------------
 	//-- In order to use this, the file name must be part of the index.
 	for (DWORD i=0;i<numFiles;i++)
@@ -378,6 +386,7 @@ long FastFile::openFast (DWORD hash, const char *fName)
 //---------------------------------------------------------------------------
 void FastFile::closeFast (DWORD fastFileHandle)
 {
+	std::lock_guard<std::mutex> lock(s_fastFileLock);
 	if ((fastFileHandle >= 0) && (fastFileHandle < numFiles) && files[fastFileHandle].inuse)
 	{
 		files[fastFileHandle].inuse = FALSE;
@@ -388,6 +397,7 @@ void FastFile::closeFast (DWORD fastFileHandle)
 //---------------------------------------------------------------------------
 long FastFile::seekFast (DWORD fastFileHandle, DWORD off, DWORD how)
 {
+	std::lock_guard<std::mutex> lock(s_fastFileLock);
 	if ((fastFileHandle >= 0) && (fastFileHandle < numFiles) && files[fastFileHandle].inuse)
 	{
 		switch (how)
@@ -452,6 +462,7 @@ long FastFile::seekFast (DWORD fastFileHandle, DWORD off, DWORD how)
 //---------------------------------------------------------------------------
 long FastFile::readFast (DWORD fastFileHandle, void *bfr, DWORD size)
 {
+	std::lock_guard<std::mutex> lock(s_fastFileLock);
 	size;
 
 	long result = 0;
@@ -682,6 +693,7 @@ long FastFile::writeFast (const char* fastFileName, void* buffer, int nbytes)
 // have to decompress them!!
 long FastFile::readFastRAW (DWORD fastFileHandle, void *bfr, DWORD size)
 {
+	std::lock_guard<std::mutex> lock(s_fastFileLock);
 	size;
 
 	long result = 0;
@@ -735,6 +747,7 @@ long FastFile::readFastRAW (DWORD fastFileHandle, void *bfr, DWORD size)
 //---------------------------------------------------------------------------
 long FastFile::tellFast (DWORD fastFileHandle)
 {
+	std::lock_guard<std::mutex> lock(s_fastFileLock);
 	if ((fastFileHandle >= 0) && (fastFileHandle < numFiles) && files[fastFileHandle].inuse)
 		return files[fastFileHandle].pos;
 
@@ -744,6 +757,7 @@ long FastFile::tellFast (DWORD fastFileHandle)
 //---------------------------------------------------------------------------
 long FastFile::sizeFast (DWORD fastFileHandle)
 {
+	std::lock_guard<std::mutex> lock(s_fastFileLock);
 	if ((fastFileHandle >= 0) && (fastFileHandle < numFiles) && files[fastFileHandle].inuse)
 		return files[fastFileHandle].pfe->realSize;
 
@@ -753,6 +767,7 @@ long FastFile::sizeFast (DWORD fastFileHandle)
 //---------------------------------------------------------------------------
 long FastFile::lzSizeFast (DWORD fastFileHandle)
 {
+	std::lock_guard<std::mutex> lock(s_fastFileLock);
 	if ((fastFileHandle >= 0) && (fastFileHandle < numFiles) && files[fastFileHandle].inuse)
 		return files[fastFileHandle].pfe->size;
 
