@@ -4572,6 +4572,7 @@ bool gos_terrain_bridge_drawMineStatic(int          vertCount,
     GLint     savedDstRGB    = 0; glGetIntegerv(GL_BLEND_DST_RGB,           &savedDstRGB);
     GLint     savedDepthMask = 0; glGetIntegerv(GL_DEPTH_WRITEMASK,         &savedDepthMask);
     GLboolean savedDepthTest = glIsEnabled(GL_DEPTH_TEST);
+    GLboolean savedCull      = glIsEnabled(GL_CULL_FACE);
     GLint     savedDepthFunc = 0; glGetIntegerv(GL_DEPTH_FUNC,              &savedDepthFunc);
     GLint     savedVAO       = 0; glGetIntegerv(GL_VERTEX_ARRAY_BINDING,    &savedVAO);
     GLint     savedActiveTex = GL_TEXTURE0; glGetIntegerv(GL_ACTIVE_TEXTURE, &savedActiveTex);
@@ -4633,6 +4634,9 @@ bool gos_terrain_bridge_drawMineStatic(int          vertCount,
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
     // Mine sprite uses alpha-test discard (in FS); no blend needed.
     glDisable(GL_BLEND);
+    // Ground decal: the quad winding depends on the camera, and an earlier pass
+    // leaves face culling on, which culled every mine sprite (MACOS-PORT-51).
+    glDisable(GL_CULL_FACE);
 
     // ---- Draw --------------------------------------------------------------
     glDrawArrays(GL_TRIANGLES, 0, (GLsizei)vertCount);
@@ -4649,6 +4653,7 @@ bool gos_terrain_bridge_drawMineStatic(int          vertCount,
 
     glBindBuffer(GL_ARRAY_BUFFER, (GLuint)savedArrayBuf);
     glColorMask(savedColorMask[0], savedColorMask[1], savedColorMask[2], savedColorMask[3]);
+    if (savedCull) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
     glDepthFunc((GLenum)savedDepthFunc);
     glDepthMask((GLboolean)savedDepthMask);
     if (savedDepthTest) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
