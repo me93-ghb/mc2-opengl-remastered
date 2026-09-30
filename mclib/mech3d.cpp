@@ -2859,7 +2859,10 @@ long Mech3DAppearance::render (long depthFixup)
 
 			// macos-port: NIGHT-LIGHT-EPIC — the mesh is actually being drawn
 			// this turn; the search-light gate keys off this (see mech3d.h).
-			spotlightLastDrawnTurn_ = turn;
+			// A sensor-only contact (sensorLevel 1..4) draws just its blip, so it
+			// must not stamp, or its search light would give away its position.
+			if (!((sensorLevel > 0) && (sensorLevel < 5)))
+				spotlightLastDrawnTurn_ = turn;
 
 			// Slice C1: render-only mech GPU cull. If MC2_GPU_MECH_CULL is on
 			// AND the GPU lagged-readback says this actor was invisible last
@@ -3770,9 +3773,13 @@ void Mech3DAppearance::updateGeometry (void)
 		g_useGpuMechs &&
 		gos_IsTerrainTessellationActive();
 
+	// A sensor-only contact (sensorLevel 1..4) counts as lights out too: its
+	// body is not drawn, but the SpotLight_ cone shapes still go through the
+	// CPU shape path and would show the beam with no line of sight.
 	if ((status == OBJECT_STATUS_DESTROYED) ||
 		(status == OBJECT_STATUS_DISABLED) || 
-		(status == OBJECT_STATUS_SHUTDOWN))
+		(status == OBJECT_STATUS_SHUTDOWN) ||
+		((sensorLevel > 0) && (sensorLevel < 5)))
 	{
 		mechShape->SetLightsOut(true);
 	}

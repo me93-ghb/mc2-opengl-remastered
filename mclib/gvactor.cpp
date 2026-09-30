@@ -2181,7 +2181,10 @@ long GVAppearance::render (long depthFixup)
 	{
 		// macos-port: NIGHT-LIGHT-EPIC — the mesh is actually being drawn this
 		// turn; the search-light gate keys off this (see gvactor.h).
-		spotlightLastDrawnTurn_ = turn;
+		// A sensor-only contact (sensorLevel 1..4) draws just its blip, so it
+		// must not stamp, or its search light would give away its position.
+		if (!((sensorLevel > 0) && (sensorLevel < 5)))
+			spotlightLastDrawnTurn_ = turn;
 
 		uint32_t color = SD_BLUE;
 		uint32_t highLight = 0x007f7f7f;
@@ -2921,9 +2924,17 @@ long GVAppearance::update (bool animate)
 	//Always override with our local instance.
 	gvShape->SetTextureHandle(0,localTextureHandle);
  
-	if ((status == OBJECT_STATUS_DESTROYED) || (status == OBJECT_STATUS_DISABLED))
+	// Sensor-only contacts (sensorLevel 1..4) get lights out like a wreck, or
+	// the SpotLight_ cone shapes show the beam with no line of sight; the else
+	// turns them back on when the contact becomes visual.
+	if ((status == OBJECT_STATUS_DESTROYED) || (status == OBJECT_STATUS_DISABLED) ||
+		((sensorLevel > 0) && (sensorLevel < 5)))
 	{
 		gvShape->SetLightsOut(true);
+	}
+	else
+	{
+		gvShape->SetLightsOut(false);
 	}
 	
  	if (animate && gvFrameRate != 0.0f)
