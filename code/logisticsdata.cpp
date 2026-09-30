@@ -1398,6 +1398,11 @@ void LogisticsData::clearVariants()
 
 long	LogisticsData::load( FitIniFile& file )
 {
+	// The chassis/variant lookups below need the mech-bay data, which smart load
+	// defers until the bay is first opened; without this a save loaded from the
+	// main menu came up with an empty bay the first time.
+	ensureMechBayDataLoaded("load");
+
 	clearInventory();
 	resourcePoints = 0;
 	pilots.Clear();
