@@ -893,3 +893,16 @@ add_executable(mp_transport_check EXCLUDE_FROM_ALL
 target_include_directories(mp_transport_check PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/code")
 target_link_libraries(mp_transport_check PRIVATE mc2_enet)
 set_target_properties(mp_transport_check PROPERTIES CXX_STANDARD 17)
+
+# Game-free check that two open movies share the mixer's one video PCM slot
+# (mixer and GameOS textures are stubbed in the test).
+add_executable(video_audio_slot_check EXCLUDE_FROM_ALL
+    tests/video/video_audio_slot_check.cpp
+    code/mc2video.cpp)
+target_link_libraries(video_audio_slot_check PRIVATE
+    FFmpegLGPL::avformat
+    FFmpegLGPL::avcodec
+    FFmpegLGPL::avutil
+    FFmpegLGPL::swscale
+    FFmpegLGPL::swresample)
+set_target_properties(video_audio_slot_check PROPERTIES CXX_STANDARD 17)

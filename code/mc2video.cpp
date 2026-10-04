@@ -205,6 +205,7 @@ struct VideoSession {
     bool             frameReady = false;
 
     // Playback clock (audio-master replaces wall clock in Task 13)
+    bool             started      = false;  // set by startPlayback on the first update
     double           clockStart   = 0.0;
     double           presentedPTS = -1.0;
 
@@ -264,7 +265,8 @@ static bool tryStartSidecarWAV(const char* waveShortName)
 }
 
 // Returns true iff: an embedded audio stream was found, its decoder
-// opened, SwrContext was initialised, and beginVideoPCMStream succeeded.
+// opened and SwrContext was initialised. The mixer slot is not taken
+// here; startPlayback takes it on the first update.
 // On any failure, partial state (aCodec/swr) is torn down cleanly and
 // s->aStream is reset to -1.
 static bool tryOpenEmbeddedAudio(VideoSession* s)
@@ -314,16 +316,6 @@ static bool tryOpenEmbeddedAudio(VideoSession* s)
         return false;
     }
 
-    if (!snd->beginVideoPCMStream(s->aOutRate, s->aOutChannels)) {
-        VIDEO_LOG("audio: embedded unavailable (mixer busy or format mismatch)");
-        swr_free(&s->swr);
-        avcodec_free_context(&s->aCodec);
-        s->aCodec = nullptr;
-        s->aStream = -1;
-        return false;
-    }
-
-    s->audioStreamStarted = true;
     VIDEO_TRACE("audio: embedded stream opened, rate=%d ch=%d",
                 s->aOutRate, s->aOutChannels);
     return true;
@@ -472,8 +464,7 @@ VideoSession* video_open(const VideoOpenParams& p, VideoOpenResult* out)
     VIDEO_LOG("init: opened '%s' (%dx%d, sar=%.3f, fps=%.2f, audio=%d)",
               p.resolvedPath, s->srcW, s->srcH, s->sar, s->fps, (int)(s->aStream >= 0));
 
-    // 8. Clock
-    s->clockStart   = (double)av_gettime() / 1000000.0;
+    // 8. Clock starts on the first update (startPlayback).
     s->presentedPTS = -1.0;
 
     return s;
@@ -543,6 +534,23 @@ static double videoMasterClock(const VideoSession* s)
     return nowSeconds() - s->clockStart;
 }
 
+// Playback starts on the first update, not at open. A movie can sit opened
+// behind another one (the briefing-screen video is opened in the same frame
+// as the full-screen cinematic and is not updated until that ends), and the
+// mixer has one video PCM slot. Taking the slot at open left the cinematic
+// silent; starting the wall clock at open made a waiting movie without
+// audio drop every frame to catch up.
+static void startPlayback(VideoSession* s)
+{
+    s->started    = true;
+    s->clockStart = nowSeconds();
+    if (!s->aCodec || !s->swr || !soundSystem) return;
+    if (reinterpret_cast<SoundSystem*>(soundSystem)->beginVideoPCMStream(s->aOutRate, s->aOutChannels))
+        s->audioStreamStarted = true;
+    else
+        VIDEO_LOG("audio: mixer busy or format mismatch; silent video");
+}
+
 //-----------------------------------------------------------------------------
 // Decode-one-frame helper — log-once error wrapper
 //-----------------------------------------------------------------------------
@@ -607,7 +615,8 @@ static void readOnePacket(VideoSession* s)
         AVPacket* q = av_packet_alloc();
         av_packet_move_ref(q, s->pkt);
         s->vQueue.push_back(q);
-    } else if (s->pkt->stream_index == s->aStream && s->aCodec && s->swr) {
+    } else if (s->pkt->stream_index == s->aStream && s->audioStreamStarted) {
+        // Only the session that holds the mixer slot may push into it.
         pushAudioPacket(s);
     }
     av_packet_unref(s->pkt);
@@ -712,6 +721,7 @@ bool video_update(VideoSession* s)
 {
     if (!s || s->eof) return true;
     if (s->paused) return false;
+    if (!s->started) startPlayback(s);
 
     fillAudioAhead(s);
     const double masterNow = videoMasterClock(s);
@@ -878,17 +888,13 @@ void video_restart(VideoSession* s)
     s->audioStallLogged = false;
     s->loggedDegenerateRect = false;
     s->loggedVideoDecodeError = false;
-    s->clockStart = nowSeconds();
-    // Re-arm audio push: end the existing stream (if any) and start
-    // a fresh one to reset the consumed-frame counter.
+    // End the existing audio stream (if any); the next update restarts the
+    // clock and takes a fresh stream, which resets the consumed-frame counter.
     if (s->audioStreamStarted && soundSystem) {
         reinterpret_cast<SoundSystem*>(soundSystem)->endVideoPCMStream();
         s->audioStreamStarted = false;
     }
-    if (s->aCodec && soundSystem &&
-        reinterpret_cast<SoundSystem*>(soundSystem)->beginVideoPCMStream(s->aOutRate, s->aOutChannels)) {
-        s->audioStreamStarted = true;
-    }
+    s->started = false;
 }
 
 void video_setRect(VideoSession* s, int x0, int y0, int w, int h)
