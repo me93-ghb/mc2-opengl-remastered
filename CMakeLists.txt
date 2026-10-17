@@ -3,6 +3,11 @@ cmake_minimum_required (VERSION 3.10)
 cmake_policy(SET CMP0072 NEW) # cmake --help-policy CMP0072
 project(mc2)
 
+# Windows must resolve its compiler and SDK headers, not the POSIX shims.
+if(NOT WIN32)
+    include_directories(BEFORE "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/compat/nonwindows")
+endif()
+
 # C++17 baseline for the whole project (CXX17-1 flip 2026-05-24).
 # RenderCore/RenderWorld/GameAdapters/tests already require cxx_std_17 via
 # target_compile_features; flipping the root removes the C++14/17 mix and
@@ -546,6 +551,7 @@ set(SOURCES
     "code/chatwindow.cpp"
     "code/mpstats.cpp"
     "code/multplyr.cpp"
+    "code/mpwire.cpp"
     "code/mptransport.cpp"   # MP-ENET-1: cross-platform transport behind the DirectPlay seam
     "code/mc2movie.cpp"
     "code/mc2video.cpp"
@@ -906,3 +912,8 @@ target_link_libraries(video_audio_slot_check PRIVATE
     FFmpegLGPL::swscale
     FFmpegLGPL::swresample)
 set_target_properties(video_audio_slot_check PROPERTIES CXX_STANDARD 17)
+
+# Packet fixtures run without a renderer or game assets.
+add_executable(mp_wire_check EXCLUDE_FROM_ALL tests/mp/mpwire_check.cpp code/mpwire.cpp)
+set_target_properties(mp_wire_check PROPERTIES CXX_STANDARD 17)
+add_test(NAME mp_wire_check COMMAND mp_wire_check)

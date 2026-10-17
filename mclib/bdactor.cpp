@@ -1,3 +1,4 @@
+#include <SDL2/SDL_stdinc.h>
 //---------------------------------------------------------------------------
 //
 //	bdactor.cpp - This file contains the code for the building and tree appearance classes
@@ -2334,7 +2335,7 @@ long BldgAppearance::render (long depthFixup)
 			// a popped actor stopped being rendered or stopped being accepted).
 			{
 				static const char* s_popPat = getenv("MC2_POP_TRACE");
-				if (s_popPat && s_popPat[0] && appearType && (s_popPat[0] == '*' || strcasestr(appearType->name, s_popPat))) {
+				if (s_popPat && s_popPat[0] && appearType && (s_popPat[0] == '*' || SDL_strcasestr(appearType->name, s_popPat))) {
 					static std::unordered_map<void*, unsigned char> s_lastSub;
 					const unsigned char st = submittedToGpu ? 1 : 0;
 					auto it = s_lastSub.find(this);
@@ -6304,7 +6305,7 @@ long TreeAppearance::render (long depthFixup)
 			// macos-port MC2_POP_TRACE: see BldgAppearance::render twin.
 			{
 				static const char* s_popPat = getenv("MC2_POP_TRACE");
-				if (s_popPat && s_popPat[0] && appearType && (s_popPat[0] == '*' || strcasestr(appearType->name, s_popPat))) {
+				if (s_popPat && s_popPat[0] && appearType && (s_popPat[0] == '*' || SDL_strcasestr(appearType->name, s_popPat))) {
 					static std::unordered_map<void*, unsigned char> s_lastSub;
 					const unsigned char st = submittedToGpu ? 1 : 0;
 					auto it = s_lastSub.find(this);

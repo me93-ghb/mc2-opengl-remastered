@@ -121,13 +121,14 @@ void MPTransport::send(void* peer, const void* data, int size, bool reliable)
 		return;
 
 	enet_uint8 channel = reliable ? CH_RELIABLE : CH_UNRELIABLE;
-	if (peer)
-		enet_peer_send((ENetPeer*)peer, channel, pkt);
-	else
-		enet_host_broadcast(h, channel, pkt);
-	// A packet nobody took ownership of (e.g. broadcast with zero peers) must be freed.
-	if (pkt->referenceCount == 0)
-		enet_packet_destroy(pkt);
+    if (peer) {
+        // A failed unicast leaves ownership with the caller.
+        if (enet_peer_send((ENetPeer*)peer, channel, pkt) < 0)
+            enet_packet_destroy(pkt);
+    } else {
+        // ENet consumes broadcasts, including when there are no connected peers.
+        enet_host_broadcast(h, channel, pkt);
+    }
 }
 
 void MPTransport::kick(void* peer)

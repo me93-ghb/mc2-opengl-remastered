@@ -10,6 +10,9 @@
 //   run:   ./mp_transport_check
 
 #include "mptransport.h"
+#include <enet/enet.h>
+#include <map>
+#include <vector>
 
 #include <stdlib.h>
 
@@ -19,6 +22,22 @@
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "CHECK FAILED: %s  (%s:%d)\n", #x, __FILE__, __LINE__); abort(); } } while (0)
 #include <stdio.h>
 #include <string.h>
+
+// Keep freed ENet allocations zeroed until teardown. Accessing a freed packet's
+// reference count then causes a deterministic double-free failure, even without ASan.
+static std::map<void*, size_t> allocations;
+static std::vector<void*> retired;
+static void* testAlloc(size_t size) {
+    void* p = malloc(size); CHECK(p); allocations[p] = size; return p;
+}
+static void testFree(void* p) {
+    if (!p) return;
+    auto it = allocations.find(p);
+    CHECK(it != allocations.end());
+    memset(p, 0, it->second);
+    allocations.erase(it);
+    retired.push_back(p);
+}
 
 struct Got {
 	int		count;
@@ -59,6 +78,9 @@ static bool pumpUntil(MPTransport& srv, MPTransport& cli, Got& gs, Got& gc, Pred
 
 int main()
 {
+    ENetCallbacks callbacks = {testAlloc, testFree, nullptr};
+    CHECK(enet_initialize_with_callbacks(ENET_VERSION, &callbacks) == 0);
+    enet_deinitialize();
 	CHECK(MPTransport::initLibrary());
 
 	const unsigned short port = MC2_MP_DEFAULT_PORT + 1;	// don't collide with a running game
@@ -68,6 +90,9 @@ int main()
 	CHECK(srv.host(port, 2));
 	CHECK(srv.isHost() && srv.isOpen());
 
+    srv.send(nullptr, "empty lobby", 12, true);
+    srv.send(nullptr, "empty lobby", 12, false);
+    printf("empty lobby  ok\n");
 	CHECK(cli.connect("127.0.0.1", port));
 	CHECK(pumpUntil(srv, cli, gs, gc, [](Got& s, Got& c) { return s.peersUp == 1 && c.peersUp == 1; }));
 	CHECK(cli.isConnected() && cli.getServerPeer() != 0);
@@ -105,6 +130,8 @@ int main()
 	printf("disconnect   ok\n");
 
 	MPTransport::shutdownLibrary();
+    CHECK(allocations.empty());
+    for (void* p : retired) free(p);
 	printf("mptransport_check: PASS\n");
 	return 0;
 }

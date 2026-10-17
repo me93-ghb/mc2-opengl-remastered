@@ -109,8 +109,11 @@ public:
 #define	MAX_WORLD_CHUNKS				1024
 
 // MP-3 world events the host relays: one plain struct per event, no bit packing
-// (both peers are the same build; the lobby version stamp enforces it).
+// The wire codec serializes each field independently of native layout.
 enum MpWorldKind { MP_WORLD_MINE = 1, MP_WORLD_FIRE, MP_WORLD_ARTILLERY, MP_WORLD_CAPTURE, MP_WORLD_SCRIPT_MSG, MP_WORLD_KILL_LOSS };
+#pragma pack(push, 1)
+struct MpMoverEntry { unsigned char idx; unsigned char flags; unsigned long status; unsigned long move; };
+#pragma pack(pop)
 struct MpWorldEntry { unsigned char kind; int a, b, c, d; float x, y, z; };
 #define MAX_STORED_CHATS				16
 #define MAX_CHAT_LENGTH					128
@@ -927,6 +930,7 @@ class MCMSG_PlayerOrder {
 			location[1] = 0.0;
 			tacOrderChunk[0] = 0;
 			tacOrderChunk[1] = 0;
+			memset(moverIndex, 0, sizeof(moverIndex));
 		}
 };
 
@@ -956,6 +960,8 @@ class MCMSG_HoldPosition {
 			flags = 0;
 			numMovers = 0;
 			fireFromCurrentPos = 0;
+			memset(moverIndex, 0, sizeof(moverIndex));
+			memset(attackRange, 0, sizeof(attackRange));
 		}
 };
 
@@ -1099,7 +1105,7 @@ class MCMSG_TurretWeaponFireUpdate {
 	public:
 
 		unsigned char		type;
-		char				numTurrets;			// RLE count: idx, n, n packed chunks
+		unsigned char       numTurrets;             // RLE count: idx, n, n packed chunks
 		unsigned char		data[];
 
 	public:

@@ -1,3 +1,4 @@
+#include <SDL2/SDL_timer.h>
 //***************************************************************************
 //
 //	multplyr.cpp - This file contains the MultiPlayer Class
@@ -108,6 +109,7 @@
 
 // MP-ENET-1: cross-platform UDP transport behind the stubbed DirectPlay seam.
 #include"mptransport.h"
+#include"mpwire.h"
 #include"contact.h"
 #include"gvehicl.h"
 #include"weaponfx.h"	// MINE_EXPLOSION_ID
@@ -133,10 +135,17 @@ namespace {
 	};
 	std::vector<InboundMsg> s_inbound;		// filled by poll callbacks, drained in processMessages()
 
-	void mpOnRecv (void* /*user*/, void* peer, const void* data, int size, bool /*reliable*/) {
+	void mpOnRecv (void* user, void* peer, const void* data, int size, bool /*reliable*/) {
 		InboundMsg m;
 		m.sender = (NETPLAYER)peer;
-		m.bytes.assign((const unsigned char*)data, (const unsigned char*)data + size);
+		if (size <= 0 || !MpWire::decode(data, (size_t)size, m.bytes)) {
+            if (getenv("MC2_LOG")) printf("[MP_PROTOCOL] rejected incompatible or malformed packet (%d bytes)\n", size);
+            MultiPlayer* mp = static_cast<MultiPlayer*>(user);
+            if (!s_transport.isHost() && peer == mp->serverPlayer)
+                mp->versionStatus = VERSION_STATUS_BAD;
+            if (peer != mp->myPlayer) s_transport.kick(peer);
+            return;
+        }
 		s_inbound.push_back(m);
 	}
 
@@ -219,9 +228,7 @@ namespace {
 	const int kMpWaitTimeoutMs = 120000;
 	enum { MP_ORDER_QUEUED = 1, MP_ORDER_NEEDS_SELECTION = 2 };	// MCMSG_PlayerOrder.flags
 	// MCMSG_MoverUpdate.moveData entry: roster index + the mover's packed status and move chunks.
-	#pragma pack(push, 1)
-	struct MpMoverEntry { unsigned char idx; unsigned char flags; unsigned long status; unsigned long move; };
-	#pragma pack(pop)
+
 	enum { MP_ENTRY_STATUS = 1, MP_ENTRY_MOVE = 2 };
 	const int kMpMoverUpdateMs = 100;		// 10 Hz poll, unreliable; only changed chunks go out
 	const int kMpMoverKeyframeEvery = 10;	// ...plus everything once a second (packet loss)
@@ -537,8 +544,11 @@ long MultiPlayer::update (void) {
 //---------------------------------------------------------------------------
 
 long MultiPlayer::beginSessionScan (char* ipAddress, bool persistent) {
-
-	return(MPLAYER_NO_ERR);
+    (void)persistent;
+    // The TCP/IP panel passes its typed address here before requesting sessions.
+    if (ipAddress && ipAddress[0])
+        setDirectAddress(ipAddress);
+    return MPLAYER_NO_ERR;
 }
 
 //---------------------------------------------------------------------------
@@ -746,7 +756,7 @@ static bool mpWaitUntil (MultiPlayer* mp, bool (*done)(MultiPlayer*), const char
 			if (getenv("MC2_LOG")) printf("[MP] wait %s: timed out\n", what);
 			return(false);
 		}
-		usleep(5000);
+		SDL_Delay(5);
 	}
 	return(true);
 }
@@ -1243,11 +1253,16 @@ void MultiPlayer::sendMessage (NETPLAYER player,
 	// NULL / myPlayer means "everyone": host broadcasts, a client talks to the server.
 	void* target = (player && player != myPlayer) ? (void*)player
 	             : (s_transport.isHost() ? (void*)NULL : s_transport.getServerPeer());
-	if (s_transport.isHost() || target)
-		s_transport.send(target, data, dataSize, guaranteed);
+    std::vector<unsigned char> wire;
+    if (!MpWire::encode(data, (size_t)dataSize, wire)) {
+        if (getenv("MC2_LOG")) printf("[MP_PROTOCOL] cannot encode type=%u size=%d\n", *(unsigned char*)data, dataSize);
+        return;
+    }
+    if (s_transport.isHost() || target)
+        s_transport.send(target, wire.data(), (int)wire.size(), guaranteed);
 
-	if (toSelf)
-		mpOnRecv(this, myPlayer, data, dataSize, guaranteed);
+    if (toSelf)
+        mpOnRecv(this, myPlayer, wire.data(), (int)wire.size(), guaranteed);
 }
 
 //-----------------------------------------------------------------------------
@@ -1695,7 +1710,8 @@ void MultiPlayer::sendMissionSetup (NETPLAYER receiver, long subType, Compressed
 	}
 	msg.randomSeed = randomSeed;
 	memcpy(msg.commandersToLoad, commandersToLoad, sizeof(commandersToLoad));
-	if (mechData)
+	// Only the lance-data stage defines a mech payload. Load/start callers pass a partial object.
+	if (mechData && subType == MP_SETUP_MECHDATA)
 		msg.mechData = *mechData;
 	else
 		memset(&msg.mechData, 0, sizeof(msg.mechData));

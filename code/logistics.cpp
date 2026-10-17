@@ -669,7 +669,7 @@ int _stdcall Logistics::beginMission(void*, int, void*[])
 				numMechs++;
 				if ( !(*iter)->getPilot() )
 					continue;
-				CompressedMech mechData;
+				CompressedMech mechData{};
 				mechData.lastMech = (list.Count() == numMechs);
 				mechData.objNumber =  (*iter)->getFitID();
 				mechData.commanderID = MPlayer->commanderID;
@@ -782,7 +782,7 @@ int _stdcall Logistics::beginMission(void*, int, void*[])
 
 		}
 		
-		CompressedMech mechData;
+		CompressedMech mechData{};
 		mechData.commanderID = MPlayer->commanderID;
 		MPlayer->sendMissionSetup(0, 2, &mechData);
 		if (!MPlayer->waitTillMissionLoaded()) {
@@ -879,7 +879,7 @@ int _stdcall Logistics::beginMission(void*, int, void*[])
 	mission->update(); // force this, so we don't render first
 
 	if (MPlayer) {
-		CompressedMech mechData;
+		CompressedMech mechData{};
 		mechData.commanderID = MPlayer->commanderID;
 		MPlayer->sendMissionSetup(0, 4, &mechData);
 		if (!MPlayer->waitTillMissionSetup()) {

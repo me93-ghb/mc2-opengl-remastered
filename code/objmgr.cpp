@@ -1,3 +1,4 @@
+#include <SDL2/SDL_stdinc.h>
 //---------------------------------------------------------------------------
 //
 //	objmgr.cpp - This file contains the GameObject Manager class code
@@ -2416,7 +2417,7 @@ void GameObjectManager::update (bool terrain, bool movers, bool other)
 					AppearancePtr app = obj->getAppearance();
 					AppearanceTypePtr at = app ? app->getAppearanceType() : NULL;
 					const char* nm = at ? at->name : NULL;
-					if (!nm || (s_popPat[0] != '*' && !strcasestr(nm, s_popPat))) continue;
+					if (!nm || (s_popPat[0] != '*' && !SDL_strcasestr(nm, s_popPat))) continue;
 					const bool vertAct = Terrain::objVertexActive[obj->getVertexNum()] != 0;
 					const bool updSeen = (obj->getWindowsVisible() >= turn - 1);
 					const unsigned char st = (blockAct ? 1 : 0) | (vertAct ? 2 : 0) | (updSeen ? 4 : 0);
