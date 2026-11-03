@@ -1501,9 +1501,13 @@ void MultiPlayer::applyWorldEntry (const MpWorldEntry& e) {
 		}
 		case MP_WORLD_FIRE: {
 			GameObjectPtr o = ObjectManager->findByPartId(e.a);
-			if (o && o->getObjectClass() == TERRAINOBJECT) {
+			// TerrainObject::init gives tree terrain objects the TREE class, not TERRAINOBJECT.
+			if (o && (o->getObjectClass() == TERRAINOBJECT || o->getObjectClass() == TREE)) {
 				((TerrainObjectPtr)o)->lightOnFire((float)e.b);
 				if (getenv("MC2_LOG")) printf("[MP_FIRE] pid=%d\n", e.a);
+			} else if (getenv("MC2_LOG")) {
+				printf("[MP_FIRE] pid=%d not applied: %s (class %d)\n", e.a,
+					o ? "not a terrain object" : "no existing object with that part id", o ? (int)o->getObjectClass() : -1);
 			}
 			break;
 		}
