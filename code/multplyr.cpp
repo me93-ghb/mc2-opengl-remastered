@@ -852,6 +852,32 @@ void MultiPlayer::missionDiagnostics (void) {
 	unsigned long now = (unsigned long)timeGetTime();
 	if (!s_missionT0) s_missionT0 = now;
 	const bool logOn = (getenv("MC2_LOG") != NULL);
+	// MC2_MP_TEST_IGNITE=<s> on the host (harness, --orders fire): no shipped effect maps to a
+	// FIRE-class object and createFire has no callers, so FireType::handleCollision never
+	// lights a tree. Light the first live tree once, the way that handler does, so the
+	// fire relay is still exercised.
+	if (iAmHost && getenv("MC2_MP_TEST_IGNITE")) {
+		static bool s_ignited = false;
+		const unsigned long kMsPerSecond = 1000;
+		const float kBurnSeconds = 15.0f;   // same burn time as FireType::handleCollision
+		const unsigned long delayMs = (unsigned long)atol(getenv("MC2_MP_TEST_IGNITE")) * kMsPerSecond;
+		if (!s_ignited && now - s_missionT0 > delayMs && ObjectManager) {
+			s_ignited = true;
+			TerrainObjectPtr tree = NULL;
+			for (long k = 0; k < ObjectManager->getNumTerrainObjects() && !tree; k++) {
+				TerrainObjectPtr o = ObjectManager->getTerrainObject(k);
+				if (o && o->getSubType() == TERROBJ_TREE && !o->isDestroyed()) tree = o;
+			}
+			if (tree) {
+				tree->lightOnFire(kBurnSeconds);
+				addLightOnFireChunk(tree, (long)kBurnSeconds);
+				printf("[MP_FIRE] test ignite pid=%ld\n", (long)tree->getPartId());
+			} else {
+				printf("[MP_FIRE] test ignite: no terrain-object tree on this map\n");
+			}
+			fflush(stdout);
+		}
+	}
 	if (logOn && now - s_lastPos >= 2000) {
 		s_lastPos = now;
 		for (long i = 0; i < MAX_MULTIPLAYER_MOVERS; i++) {
@@ -939,7 +965,8 @@ void MultiPlayer::missionDiagnostics (void) {
 		if (strcmp(getenv("MC2_MP_SCRIPT_ORDERS"), "recover") == 0)
 			return;	// nobody moves: the Karnov comes to the ejected mech, no fight needed
 		if (strcmp(getenv("MC2_MP_SCRIPT_ORDERS"), "fire") == 0) {
-			// Shoot at the nearest tree: a shot into a tree has a 1 in 10 chance of lighting it (carnage.cpp).
+			// Shoot at the nearest tree. Shots never light it (no shipped weapon effect is a FIRE
+			// object); the host's MC2_MP_TEST_IGNITE hook in missionDiagnostics lights it instead.
 			MoverPtr me = localMovers[0];
 			GameObjectPtr tree = NULL; float best = 1.0e30f;
 			for (long k = 0; me && k < ObjectManager->getNumTerrainObjects(); k++) {
@@ -948,8 +975,11 @@ void MultiPlayer::missionDiagnostics (void) {
 				float d = me->distanceFrom(o->getPosition());
 				if (d < best) { best = d; tree = o; }
 			}
-			if (!tree) { printf("[MP_FIRE] no terrain-object tree on this map (TREE-class trees never burn: carnage.cpp)\n"); fflush(stdout); return; }
-			for (long i = 0; i < numLocalMovers; i++) {
+			if (!tree) {
+				// Nothing to burn: give the default attack orders below so the run still plays.
+				printf("[MP_FIRE] no terrain-object tree on this map; using attack orders\n"); fflush(stdout);
+			}
+			for (long i = 0; tree && i < numLocalMovers; i++) {
 				MoverPtr m = localMovers[i];
 				if (!m || m->isDestroyed()) continue;
 				TacticalOrder tacOrder;
@@ -963,8 +993,10 @@ void MultiPlayer::missionDiagnostics (void) {
 				tacOrder.pack(NULL, NULL);
 				sendPlayerOrder(&tacOrder, false, 1, &m);
 			}
-			printf("[MP_FIRE] attack-point orders at tree pid=%ld dist=%.0f\n", (long)tree->getPartId(), best); fflush(stdout);
-			return;
+			if (tree) {
+				printf("[MP_FIRE] attack-point orders at tree pid=%ld dist=%.0f\n", (long)tree->getPartId(), best); fflush(stdout);
+				return;
+			}
 		}
 		if (strcmp(getenv("MC2_MP_SCRIPT_ORDERS"), "refit") == 0) {
 			// Buy a repair truck, shell localMovers[0] with our own artillery, then send the truck to fix it.

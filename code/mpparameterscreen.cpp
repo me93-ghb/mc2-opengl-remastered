@@ -746,9 +746,12 @@ void MPParameterScreen::update()
 			if ( n >= 2 ) s_autoTestTimer += frameLength;
 			if ( s_autoTestTimer > 5.f )
 			{
-				MPlayer->missionSettings.airStrike ^= 1;
+				// Toggle a lobby option no scripted order uses. Toggling airStrike switched
+				// artillery off before MC2_MP_SCRIPT_ORDERS=vtol calls a strike, which the host
+				// now (rightly) rejects because the lobby disabled it.
+				MPlayer->missionSettings.sensorProbe ^= 1;
 				s_autoTestDone = true;
-				printf("[MP] autotest toggled airStrike=%d\n", MPlayer->missionSettings.airStrike ? 1 : 0);
+				printf("[MP] autotest toggled sensorProbe=%d\n", MPlayer->missionSettings.sensorProbe ? 1 : 0);
 				fflush(stdout);
 			}
 		}
