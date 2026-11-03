@@ -37,6 +37,10 @@ set(DATA_TOOLS_ENGINE_LIBS
     GLEW::GLEW
     SDL2_mixer::SDL2_mixer
     ${ADDITIONAL_LIBS}
+    # macos-port: gos_render.cpp calls Mesa's EGL/GL directly; same libs as mc2
+    # (empty off Apple).
+    ${MC2_MACOS_MESA_GL}
+    ${MC2_MACOS_MESA_EGL}
     OpenGL::GL
 )
 
