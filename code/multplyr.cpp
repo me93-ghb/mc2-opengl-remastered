@@ -154,6 +154,13 @@ namespace {
 
 		if (s_transport.isHost()) {
 			if (connected) {
+				// Joining is only possible from the lobby. A locked or launched session would
+				// otherwise hand a stranger a free slot, including a dropped player's lance mid-match.
+				if (mp->locked || mp->inProgress || mp->mode > MULTIPLAYER_MODE_PARAMETERS) {
+					if (getenv("MC2_LOG")) printf("[MP] session closed to new players, kicking %p\n", peer);
+					s_transport.kick(peer);
+					return;
+				}
 				// Lowest free slot. Slot 0 is the host (set in hostSession).
 				long cid = -1;
 				for (long i = 0; i < MAX_MC_PLAYERS; i++)
@@ -237,6 +244,21 @@ namespace {
 	bool s_lastSentValidChunk[MAX_MULTIPLAYER_MOVERS];
 	long s_hitsSent = 0, s_hitsApplied = 0, s_fireChunksSent = 0, s_fireChunksReceived = 0;
 	const float kMpEntryQuad[4] = {0.0f, 180.0f, -90.0f, 90.0f};	// WeaponHitChunk.entryAngle
+	// Host: what each reserved roster slot is waiting for (valid while rosterReserved[i] is set):
+	// the commander whose VTOL will land there, with which vehicle, where, and since when.
+	// The UI flies one VTOL at a time per commander; a second pending drop allows for a
+	// reservation stranded by a VTOL that never flew (the owner's was already in the air).
+	// Stranded reservations are released after kMpReservationTimeout seconds of mission time,
+	// far longer than a VTOL takes to reach its drop frame.
+	struct MpSlotReservation {
+		long owner;
+		long vehicleID;
+		float x, y;
+		float time;
+	};
+	MpSlotReservation s_slotReservation[MAX_MULTIPLAYER_MOVERS];
+	const long kMpMaxPendingDrops = 2;
+	const float kMpReservationTimeout = 120.0f;
 	unsigned short s_moverUpdateId = 0;		// host: last sent
 	unsigned short s_lastMoverUpdateId = 0;	// client: last applied
 	bool s_haveMoverUpdate = false;
@@ -244,6 +266,55 @@ namespace {
 		const char* e = getenv("MC2_MP_PORT");
 		long v = e ? atol(e) : 0;
 		return (v > 0 && v < 65536) ? (unsigned short)v : (unsigned short)MC2_MP_DEFAULT_PORT;
+	}
+
+	// Range checks for values peers send. MpWire validates packet structure; these validate
+	// meaning, because the legacy game code indexes fixed tables with them (team score arrays,
+	// the colour table, the purchase files, Commander::commanders).
+	const long kMpNumFactions = 5;		// entries in pPurchaseFiles[] (mpparameterscreen.cpp)
+	bool mpValidCommander (long cid) { return cid >= 0 && cid < MAX_MC_PLAYERS; }
+	bool mpValidTeam (long team) { return team >= 0 && team < MAX_TEAMS; }
+	bool mpValidColor (long index) { return index >= 0 && index < MAX_COLORS; }
+	// A lobby row from a peer. A field out of range keeps the value we already had rather than
+	// dropping the whole row (and its ready flag): the lobby drop lists report -1 while rebuilt.
+	void mpSanitizePlayerRow (MC2Player& p, const MC2Player& current) {
+		for (size_t i = 0; i < sizeof(p.baseColor); i++)
+			if (!mpValidColor(p.baseColor[i]))
+				p.baseColor[i] = current.baseColor[i];
+		if (!mpValidColor(p.stripeColor))
+			p.stripeColor = current.stripeColor;
+		if (!mpValidTeam(p.team))
+			p.team = current.team;
+		if (p.faction < 0 || p.faction >= kMpNumFactions)
+			p.faction = current.faction;
+	}
+	// Peer file names become paths (<missionPath><map>.fit/.pak, <warriorPath><pilot>.fit),
+	// so only a bare name is accepted.
+	bool mpBareFileName (const char* name) {
+		return !strchr(name, '/') && !strchr(name, '\\') && !strchr(name, ':') && !strstr(name, "..");
+	}
+	char mpClampChar (char v, char lo, char hi) { return v < lo ? lo : (v > hi ? hi : v); }
+	// Counts and the mission type index fixed tables, so they are clamped. A map file without
+	// them leaves the host with defaults or garbage, and rejecting the whole update would stop
+	// the map, flags and lock state from ever reaching us.
+	void mpClampSettings (MissionSettings& s) {
+		s.maxTeams = mpClampChar(s.maxTeams, 1, MAX_TEAMS);
+		s.maxPlayers = mpClampChar(s.maxPlayers, 1, MAX_MC_PLAYERS);
+		s.numPlayers = mpClampChar(s.numPlayers, 0, MAX_MC_PLAYERS);
+		if (s.missionType < 0 || s.missionType >= NUM_MISSION_TYPES)
+			s.missionType = 0;
+	}
+	// A world position from a peer must lie on the map before terrain code turns it into a cell.
+	bool mpOnMap (float x, float y) {
+		if (!land)
+			return false;
+		const float dx = x - Terrain::mapTopLeft3d.x;
+		const float dy = Terrain::mapTopLeft3d.y - y;
+		return dx >= 0.0f && dy >= 0.0f && dx < Terrain::worldUnitsMapSide && dy < Terrain::worldUnitsMapSide;
+	}
+	void mpRejected (const char* what, long cid) {
+		if (getenv("MC2_LOG"))
+			printf("[MP_PROTOCOL] rejected %s from commanderID %ld\n", what, cid);
 	}
 }
 #include"mpparameterscreen.h"
@@ -1414,6 +1485,11 @@ void MultiPlayer::applyKillLoss (long killerCID, long loserCID) {
 void MultiPlayer::applyWorldEntry (const MpWorldEntry& e) {
 	switch (e.kind) {
 		case MP_WORLD_MINE: {
+			// setMine ignores an off-map cell, but the explosion below would still be placed there.
+			if (!GameMap || !GameMap->inBounds(e.a, e.b)) {
+				mpRejected("mine world entry", findPlayer(serverPlayer));
+				break;
+			}
 			if (getenv("MC2_LOG")) printf("[MP_MINE] r=%d c=%d state=%d\n", e.a, e.b, e.c);
 			GameMap->setMine(e.a, e.b, (unsigned long)e.c);
 			if (e.d == 2) {	// mine went off: effect only, the host relays the damage as weapon hits
@@ -1432,12 +1508,22 @@ void MultiPlayer::applyWorldEntry (const MpWorldEntry& e) {
 			break;
 		}
 		case MP_WORLD_ARTILLERY: {
+			if (!mpOnMap(e.x, e.y)) {
+				mpRejected("artillery world entry", findPlayer(serverPlayer));
+				break;
+			}
 			Stuff::Vector3D loc(e.x, e.y, e.z);
 			if (getenv("MC2_LOG")) printf("[MP_ART] cid=%d type=%d\n", e.a, e.b);
-			CallArtillery(e.a, e.b, loc, e.c, false);	// not the server: creates the strike, queues nothing
+			CallArtillery(e.a, e.b, loc, e.c, false);	// not the server: creates the strike, queues nothing (it range-checks cid and type)
 			break;
 		}
 		case MP_WORLD_CAPTURE: {
+			// -1 is neutral; anything else must be a real commander and team (contact code
+			// indexes teamSensors with the team on the next capture).
+			if (e.b < -1 || e.b >= MAX_MC_PLAYERS || e.c < -1 || e.c >= MAX_TEAMS) {
+				mpRejected("capture world entry", findPlayer(serverPlayer));
+				break;
+			}
 			GameObjectPtr o = ObjectManager->findByPartId(e.a);
 			if (o && o->isBuilding()) {
 				if (o->getObjectType()->getObjTypeNum() == GENERIC_HQ_BUILDING_OBJNUM && missionSettings.missionType == MISSION_TYPE_CAPTURE_BASE)
@@ -1758,15 +1844,91 @@ void MultiPlayer::sendEndMission (long result) {
 //---------------------------------------------------------------------------
 extern MoverPtr BringInReinforcement (long vehicleID, long rosterIndex, long commanderID, Stuff::Vector3D pos, bool exists);
 
+// Host: free reservations whose VTOL never landed, so they stop holding a roster slot and
+// counting against their owner's pending drops (see s_slotReservation).
+static void mpReleaseStaleReservations (MultiPlayer* mp) {
+	for (long i = 0; i < MAX_MULTIPLAYER_MOVERS; i++)
+		if (mp->rosterReserved[i] && !mp->moverRoster[i] && scenarioTime - s_slotReservation[i].time > kMpReservationTimeout) {
+			mp->rosterReserved[i] = false;
+			if (getenv("MC2_LOG"))
+				printf("[MP_VTOL] released stale reservation idx=%ld owner=%ld\n", i, s_slotReservation[i].owner);
+		}
+}
+
 void MultiPlayer::assignReinforcementSlot (MCMSG_Reinforcement* msg) {
 	// Host only: reserve the first free roster slot for the vehicle that will land later.
+	mpReleaseStaleReservations(this);
 	for (long i = 0; i < MAX_MULTIPLAYER_MOVERS; i++)
 		if (!moverRoster[i] && !rosterReserved[i]) {
 			rosterReserved[i] = true;
+			MpSlotReservation& r = s_slotReservation[i];
+			r.owner = msg->commanderID;
+			r.vehicleID = msg->vehicleID;
+			r.x = msg->location[0];
+			r.y = msg->location[1];
+			r.time = scenarioTime;
 			msg->rosterIndex = (unsigned char)i;
 			return;
 		}
 	msg->rosterIndex = 255;
+}
+
+// Support vehicles are the five ControlGui knows; any other ID has no pilot file to load
+// (BringInReinforcement STOPs, beginVtol flies a NULL vehicle file). beginVtol and updateVTol
+// pick the Karnov or the VTOL code path from the vehicle ID, and each path reads a roster
+// slot only its own stage sets, so the Karnov belongs to stage 3 and every other vehicle to
+// stages 0 and 2.
+static bool mpValidSupportVehicle (long vehicleID, unsigned char stage) {
+	if (!MissionInterfaceManager::instance() || !MissionInterfaceManager::instance()->getSupportVehicleNameFromID(vehicleID))
+		return false;
+	return (stage == 3) == (vehicleID == MissionInterfaceManager::KARNOV_VEHICLE_ID);
+}
+
+// Is a VTOL or Karnov already flying for this commander here? beginVtol would retarget it
+// (and switch it to the other code path for the other kind of vehicle), so a second request
+// for the same commander is ignored until it has gone.
+static bool mpVtolBusy (long cid) {
+	return !MissionInterfaceManager::instance() || MissionInterfaceManager::instance()->isVtolActive(cid);
+}
+
+// Host: may client 'origin' send this reinforcement message? A client only speaks for itself.
+// Positive resource point deltas (kills, captures, refunds) are only ever sent by the host,
+// so a client may only spend. Stage 7 carries commanderID 0 from every sender
+// (mechicon.cpp), so the mover it names is what has to belong to the sender.
+static bool mpClientMayReinforce (MultiPlayer* mp, long origin, const MCMSG_Reinforcement* msg) {
+	switch (msg->stage) {
+		case 0: {	// checked before a roster slot is reserved for it
+			if (msg->commanderID != origin || !mpValidSupportVehicle(msg->vehicleID, msg->stage) || !mpOnMap(msg->location[0], msg->location[1]))
+				return false;
+			long pending = 0;
+			for (long i = 0; i < MAX_MULTIPLAYER_MOVERS; i++)
+				if (mp->rosterReserved[i] && s_slotReservation[i].owner == origin)
+					pending++;
+			return pending < kMpMaxPendingDrops;
+		}
+		case 2: {	// landed: the vehicle this commander asked for, where it asked, in the slot reserved for it
+			long idx = msg->rosterIndex;
+			if (msg->commanderID != origin || idx >= MAX_MULTIPLAYER_MOVERS || !mp->rosterReserved[idx] || mp->moverRoster[idx])
+				return false;
+			const MpSlotReservation& r = s_slotReservation[idx];
+			// The owner lands at the position it was sent at stage 0; one cell of slack.
+			return r.owner == origin && r.vehicleID == msg->vehicleID
+				&& fabs(msg->location[0] - r.x) <= Terrain::worldUnitsPerCell
+				&& fabs(msg->location[1] - r.y) <= Terrain::worldUnitsPerCell;
+		}
+		case 3:
+			return msg->commanderID == origin && mpValidSupportVehicle(msg->vehicleID, msg->stage) && mpOnMap(msg->location[0], msg->location[1]);
+		case 5:
+			return msg->commanderID == origin;
+		case 6:
+			return msg->commanderID == origin && msg->vehicleID <= 0;
+		case 7: {
+			MoverPtr m = (msg->rosterIndex < MAX_MULTIPLAYER_MOVERS) ? mp->moverRoster[msg->rosterIndex] : NULL;
+			return m && m->getCommanderId() == origin;
+		}
+		default:
+			return false;
+	}
 }
 
 void MultiPlayer::requestReinforcement (long vehicleID, Stuff::Vector3D pos) {
@@ -1777,8 +1939,14 @@ void MultiPlayer::applyReinforcement (MCMSG_Reinforcement* msg, bool fromNetwork
 	long cid = msg->commanderID;
 	switch (msg->stage) {
 		case 0: {	// VTOL drop requested: every machine flies the VTOL for that commander
-			if (cid < 0 || cid >= MAX_MC_PLAYERS || !MissionInterfaceManager::instance())
+			// A drop needs a roster slot to land in (updateVTol indexes moverRoster with it).
+			if (!mpValidCommander(cid) || msg->rosterIndex >= MAX_MULTIPLAYER_MOVERS
+				|| !mpValidSupportVehicle(msg->vehicleID, msg->stage) || !mpOnMap(msg->location[0], msg->location[1]))
 				break;
+			if (mpVtolBusy(cid)) {	// the host releases the slot once it goes stale
+				if (getenv("MC2_LOG")) printf("[MP_VTOL] request cid=%ld ignored: support already in flight\n", cid);
+				break;
+			}
 			reinforcements[cid][0] = msg->rosterIndex;
 			Stuff::Vector3D pos(msg->location[0], msg->location[1], 0.0f);
 			pos.z = land->getTerrainElevation(pos);
@@ -1787,7 +1955,8 @@ void MultiPlayer::applyReinforcement (MCMSG_Reinforcement* msg, bool fromNetwork
 			break;
 		}
 		case 2: {	// VTOL dropped on the owner's machine: create the vehicle in the assigned slot everywhere
-			if (cid < 0 || cid >= MAX_MC_PLAYERS || msg->rosterIndex >= MAX_MULTIPLAYER_MOVERS)
+			if (!mpValidCommander(cid) || msg->rosterIndex >= MAX_MULTIPLAYER_MOVERS || !Commander::commanders[cid]
+				|| !mpValidSupportVehicle(msg->vehicleID, msg->stage) || !mpOnMap(msg->location[0], msg->location[1]))
 				break;
 			Stuff::Vector3D pos(msg->location[0], msg->location[1], 0.0f);
 			pos.z = land->getTerrainElevation(pos);
@@ -1796,8 +1965,15 @@ void MultiPlayer::applyReinforcement (MCMSG_Reinforcement* msg, bool fromNetwork
 			break;
 		}
 		case 3: {	// Karnov recovery requested for moverRoster[rosterIndex]: every machine flies the Karnov
-			if (cid < 0 || cid >= MAX_MC_PLAYERS || msg->rosterIndex >= MAX_MULTIPLAYER_MOVERS || !MissionInterfaceManager::instance())
+			// beginVtol points the Karnov at moverRoster[rosterIndex] and updateVTol dereferences it.
+			if (!mpValidCommander(cid) || msg->rosterIndex >= MAX_MULTIPLAYER_MOVERS
+				|| !moverRoster[msg->rosterIndex] || moverRoster[msg->rosterIndex]->isDestroyed()
+				|| !mpValidSupportVehicle(msg->vehicleID, msg->stage) || !mpOnMap(msg->location[0], msg->location[1]))
 				break;
+			if (mpVtolBusy(cid)) {
+				if (getenv("MC2_LOG")) printf("[MP_KARNOV] request cid=%ld ignored: support already in flight\n", cid);
+				break;
+			}
 			reinforcements[cid][1] = msg->rosterIndex;
 			strncpy(reinforcementPilot[cid], msg->pilotName, sizeof(reinforcementPilot[cid]) - 1);
 			Stuff::Vector3D pos(msg->location[0], msg->location[1], 0.0f);
@@ -1807,7 +1983,9 @@ void MultiPlayer::applyReinforcement (MCMSG_Reinforcement* msg, bool fromNetwork
 			break;
 		}
 		case 5:	// the owner's Karnov finished: repair, re-crew and power up the mech here too
-			if (cid >= 0 && cid < MAX_MC_PLAYERS && MissionInterfaceManager::instance())
+			// Only while that Karnov is here waiting: mechToRecover outlives the recovery, and
+			// a stray stage 5 would otherwise fully repair that mech again for free.
+			if (mpValidCommander(cid) && MissionInterfaceManager::instance() && MissionInterfaceManager::instance()->isAwaitingRecovery(cid))
 				MissionInterfaceManager::instance()->completeRecovery(cid);
 			break;
 		case 6:	// resource points delta (vehicleID carries the amount: kills, captured buildings, purchases)
@@ -1847,7 +2025,14 @@ void MultiPlayer::sendReinforcement (long vehicleID, long rosterIndex, const cha
 	msg.location[0] = pos.x; msg.location[1] = pos.y;
 	if (stage == 0 || stage == 3) {
 		// A drop / recovery request. The host answers it (slot, broadcast); a client just asks.
-		if (iAmHost) { if (stage == 0) assignReinforcementSlot(&msg); applyReinforcement(&msg, true); }
+		if (iAmHost) {
+			if (stage == 0) {
+				assignReinforcementSlot(&msg);
+				if (msg.rosterIndex >= MAX_MULTIPLAYER_MOVERS)
+					return;	// roster full: nowhere for the vehicle to land
+			}
+			applyReinforcement(&msg, true);
+		}
 		sendMessage(NULL, &msg, sizeof(msg), true /*GUARANTEED*/, false);
 		return;
 	}
@@ -2144,8 +2329,17 @@ void MultiPlayer::sendWorldUpdate (void) {
 //---------------------------------------------------------------------------
 
 void MultiPlayer::handleChat (NETPLAYER sender, MCMSG_Chat* msg) {
+	if (iAmHost && sender != myPlayer) {
+		// The host knows who sent the line: stamp it, so nobody can chat under another player's name.
+		long origin = findPlayer(sender);
+		if (origin < 0)
+			return;
+		msg->senderCID = (char)origin;
+	}
+	else if (!iAmHost && sender != serverPlayer)
+		return;
 	long cid = msg->senderCID;
-	if (cid < 0 || cid >= MAX_MC_PLAYERS)
+	if (!mpValidCommander(cid))
 		cid = findPlayer(sender);
 	// Host relays a client's line to the other peers (the origin already showed it via toSelf).
 	if (iAmHost && sender != myPlayer) {
@@ -2172,6 +2366,11 @@ void MultiPlayer::handleChat (NETPLAYER sender, MCMSG_Chat* msg) {
 void MultiPlayer::handleMissionSettingsUpdate (NETPLAYER sender, MCMSG_MissionSettingsUpdate* msg) {
 	if (iAmHost || sender != serverPlayer)
 		return;
+	if (!mpBareFileName(msg->missionSettings.map)) {
+		mpRejected("mission settings", findPlayer(serverPlayer));
+		return;
+	}
+	mpClampSettings(msg->missionSettings);
 	missionSettings = msg->missionSettings;
 	locked = missionSettings.locked;
 	inProgress = missionSettings.inProgress;
@@ -2227,6 +2426,9 @@ void MultiPlayer::handlePlayerUpdate (NETPLAYER sender, MCMSG_PlayerUpdate* msg)
 			bootPlayer(sender);
 			return;
 		}
+		mpSanitizePlayerRow(msg->info, row);
+		// Sides are picked in the lobby; once the game launches a client cannot change team.
+		const bool lobbyOpen = !inProgress && mode <= MULTIPLAYER_MODE_PARAMETERS;
 		bool firstHello = (msg->stage == MP_PU_HELLO);	// a hello always gets the full lobby state (idempotent)
 		bool readyChanged = (row.ready != msg->info.ready);
 		// Merge the client-owned fields; the host owns identity, slot and seniority.
@@ -2238,8 +2440,10 @@ void MultiPlayer::handlePlayerUpdate (NETPLAYER sender, MCMSG_PlayerUpdate* msg)
 		row.insigniaFile[MAXLEN_INSIGNIA_FILE - 1] = 0;
 		memcpy(row.baseColor, msg->info.baseColor, sizeof(row.baseColor));
 		row.stripeColor = msg->info.stripeColor;
-		row.team = msg->info.team;
-		row.teamSelected = msg->info.teamSelected;
+		if (lobbyOpen) {
+			row.team = msg->info.team;
+			row.teamSelected = msg->info.teamSelected;
+		}
 		row.faction = msg->info.faction;
 		row.cBills = msg->info.cBills;
 		row.ready = msg->info.ready;
@@ -2265,6 +2469,7 @@ void MultiPlayer::handlePlayerUpdate (NETPLAYER sender, MCMSG_PlayerUpdate* msg)
 			printf("[MP] host build %s differs from ours %s\n", msg->versionStamp, MC2_BUILD_GIT_SHA);
 	}
 	MC2Player& row = playerInfo[cid];
+	mpSanitizePlayerRow(msg->info, row);
 	NETPLAYER keep = (cid == commanderID) ? myPlayer : (cid == 0 ? serverPlayer : remotePlayerHandle(cid));
 	row = msg->info;
 	row.player = keep;
@@ -2283,6 +2488,13 @@ void MultiPlayer::handleMissionSetup (NETPLAYER sender, MCMSG_MissionSetup* msg)
 			return;
 		switch (msg->subType) {
 			case MP_SETUP_MECHDATA: {
+				// Logistics indexes playerInfo with the mech's commanderID: it must be the sender's.
+				// An entry with objNumber <= 0 would never advance the slot search below, and the
+				// pilot file name becomes <warriorPath><pilot>.fit (logistics.cpp checks the type).
+				if (msg->mechData.commanderID != cid || msg->mechData.objNumber <= 0 || !mpBareFileName(msg->mechData.pilotFile)) {
+					mpRejected("mech data", cid);
+					break;
+				}
 				long j = 0;
 				while (j < 12 && mechData[cid][j].objNumber > 0) j++;
 				if (j < 12) mechData[cid][j] = msg->mechData;
@@ -2304,6 +2516,14 @@ void MultiPlayer::handleMissionSetup (NETPLAYER sender, MCMSG_MissionSetup* msg)
 			startLogistics = true;
 			break;
 		case MP_SETUP_ZONES:
+			// Each drop zone row is {commanderID, team, HQ slot}, -1 meaning empty.
+			for (long i = 0; i < MAX_MC_PLAYERS; i++) {
+				const signed char* z = (const signed char*)msg->commandersToLoad[i];
+				if (z[0] < -1 || z[0] >= MAX_MC_PLAYERS || z[1] < -1 || z[1] >= MAX_TEAMS || z[2] < -1 || z[2] >= MAX_TEAMS) {
+					mpRejected("drop zones", findPlayer(serverPlayer));
+					return;
+				}
+			}
 			memcpy(commandersToLoad, msg->commandersToLoad, sizeof(commandersToLoad));
 			randomSeed = msg->randomSeed;
 			startLoading = true;
@@ -2367,7 +2587,7 @@ void MultiPlayer::handleEndMission (NETPLAYER sender, MCMSG_EndMission* msg) {
 		if (i < MAX_TEAMS) teamScore[i] = msg->teamScore[i];
 		playerInfo[i].score = msg->playerScore[i];
 	}
-	winningTeam = msg->result;
+	winningTeam = (msg->result >= -1 && msg->result < MAX_TEAMS) ? msg->result : -1;
 	for (long i = 0; i < MAX_MC_PLAYERS; i++)
 		if (playerInfo[i].player)
 			playerInfo[i].winner = (winningTeam >= 0 && playerInfo[i].team == winningTeam);
@@ -2392,11 +2612,19 @@ void MultiPlayer::handleReinforcement (NETPLAYER sender, MCMSG_Reinforcement* ms
 	if (mode != MULTIPLAYER_MODE_MISSION || !mission)
 		return;
 	if (iAmHost) {
-		if (findPlayer(sender) < 0)
+		long origin = findPlayer(sender);
+		if (msg->stage == 0)
+			mpReleaseStaleReservations(this);	// before mpClientMayReinforce counts pending drops
+		if (origin < 0 || !mpClientMayReinforce(this, origin, msg)) {
+			mpRejected("reinforcement", origin);
 			return;
+		}
 		if (msg->stage == 0 || msg->stage == 3) {	// drop / recovery request from a client: everyone (origin included) flies it
-			if (msg->stage == 0)
+			if (msg->stage == 0) {
 				assignReinforcementSlot(msg);
+				if (msg->rosterIndex >= MAX_MULTIPLAYER_MOVERS)
+					return;	// roster full: nowhere for the vehicle to land
+			}
 			else {
 				MoverPtr t = (msg->rosterIndex < MAX_MULTIPLAYER_MOVERS) ? moverRoster[msg->rosterIndex] : NULL;
 				if (!t || t->isDestroyed() || !t->isDisabled())
@@ -2449,6 +2677,38 @@ void MultiPlayer::handleLeaveSession (NETPLAYER sender, MCMSG_LeaveSession* msg)
 
 //-----------------------------------------------------------------------------
 
+// Object orders dereference their target when packed (TacticalOrder::pack, which
+// Mover::handleTacticalOrder runs for queued orders), so one whose target is gone is unusable.
+static bool mpOrderHasTarget (TacticalOrder& order) {
+	switch (order.code) {
+		case TACTICAL_ORDER_MOVETO_OBJECT:
+		case TACTICAL_ORDER_JUMPTO_OBJECT:
+		case TACTICAL_ORDER_ATTACK_OBJECT:
+		case TACTICAL_ORDER_CAPTURE:
+		case TACTICAL_ORDER_REFIT:
+		case TACTICAL_ORDER_GETFIXED:
+		case TACTICAL_ORDER_RECOVER:
+			return order.getTarget() != NULL;
+		default:
+			return true;
+	}
+}
+
+// A client's order, as unpacked from the wire. Mover::handleTacticalOrder asserts on codes it
+// does not handle, and an aimed shot becomes the hit location, which indexes the target's armour
+// table: the UI only aims at a mech's body locations.
+static bool mpValidPeerOrder (TacticalOrder& order) {
+	if (order.code <= TACTICAL_ORDER_NONE || order.code >= NUM_TACTICAL_ORDERS || order.code == TACTICAL_ORDER_SCRAMBLE)
+		return false;
+	if (!mpOrderHasTarget(order))
+		return false;
+	long aim = order.attackParams.aimLocation;
+	if (aim == -1)
+		return true;
+	GameObjectPtr target = order.getTarget();
+	return aim >= 0 && aim < NUM_MECH_BODY_LOCATIONS && target && target->getObjectClass() == BATTLEMECH;
+}
+
 void MultiPlayer::handleHoldPosition (NETPLAYER sender, MCMSG_HoldPosition* msg) {
 	if (!iAmHost)
 		return;
@@ -2460,11 +2720,15 @@ void MultiPlayer::handleHoldPosition (NETPLAYER sender, MCMSG_HoldPosition* msg)
 		MoverPtr m = (idx < MAX_MULTIPLAYER_MOVERS) ? moverRoster[idx] : NULL;
 		if (!m || m->getCommanderId() != cid || m->isDestroyed() || !m->getPilot())
 			continue;
+		// The byte carries a FireRangeType, which runs from FIRERANGE_DEFAULT (-4) up.
+		long range = (signed char)msg->attackRange[i];
+		if (range < FIRERANGE_DEFAULT || range >= NUM_FIRERANGES)
+			continue;
 		TacticalOrderPtr order = m->getPilot()->getCurTacOrder();
-		if (order->code == TACTICAL_ORDER_NONE)
+		if (order->code == TACTICAL_ORDER_NONE || !mpOrderHasTarget(*order))
 			continue;
 		// Same edit ControlGui makes locally for the host's own lance.
-		order->attackParams.range = (FireRangeType)msg->attackRange[i];
+		order->attackParams.range = (FireRangeType)range;
 		if (order->attackParams.range == FIRERANGE_CURRENT)
 			order->attackParams.pursue = false;
 		else if (msg->fireFromCurrentPos)
@@ -2490,6 +2754,10 @@ void MultiPlayer::handlePlayerOrder (NETPLAYER sender, MCMSG_PlayerOrder* msg) {
 	tacOrder.data[0] = msg->tacOrderChunk[0];
 	tacOrder.data[1] = msg->tacOrderChunk[1];
 	tacOrder.unpack();
+	if (!mpValidPeerOrder(tacOrder)) {
+		mpRejected("order", cid);
+		return;
+	}
 	long applied = 0;
 	for (long i = 0; i < msg->numMovers && i < MAX_LOCAL_MOVERS; i++) {
 		long idx = msg->moverIndex[i];
@@ -2515,9 +2783,17 @@ void MultiPlayer::handlePlayerArtillery (NETPLAYER sender, MCMSG_PlayerArtillery
 	long cid = findPlayer(sender);
 	if (cid < 0 || mode != MULTIPLAYER_MODE_MISSION || !mission)
 		return;
+	long strikeType = (long)(msg->chunk & 0xff);
+	// Strikes are a lobby option; the client UI only offers the kinds the host enabled.
+	bool enabled = (strikeType == ARTILLERY_SENSOR) ? missionSettings.sensorProbe
+		: ((strikeType == ARTILLERY_SMALL || strikeType == ARTILLERY_LARGE) && missionSettings.airStrike);
+	if (!enabled || !mpOnMap(msg->location[0], msg->location[1])) {
+		mpRejected("artillery", cid);
+		return;
+	}
 	Stuff::Vector3D loc(msg->location[0], msg->location[1], msg->location[2]);
 	// The host's CallArtillery queues the world entry, so every client (the caller included) gets the strike.
-	CallArtillery(cid, (long)(msg->chunk & 0xff), loc, (long)((msg->chunk >> 8) & 0xffff), false);
+	CallArtillery(cid, strikeType, loc, (long)((msg->chunk >> 8) & 0xffff), false);
 }
 
 //---------------------------------------------------------------------------
@@ -2686,6 +2962,11 @@ void MultiPlayer::handleWeaponHitUpdate (NETPLAYER sender, MCMSG_WeaponHitUpdate
 		}
 		if (!target)
 			continue;
+		// Mover hit handlers index armor[] with hitLocation and only log a bad one.
+		if (target->isMover() && (chunk.hitLocation < 0 || chunk.hitLocation >= ((MoverPtr)target)->numArmorLocations)) {
+			mpRejected("weapon hit location", findPlayer(serverPlayer));
+			continue;
+		}
 		WeaponShotInfo shotInfo;
 		shotInfo.init(0, chunk.cause, chunk.damage, chunk.hitLocation, kMpEntryQuad[chunk.entryAngle & 3]);
 		target->handleWeaponHit(&shotInfo, false);
@@ -3102,7 +3383,7 @@ void MultiPlayer::initStartupParameters (bool fresh) {
 	cancelled = false;
 	commanderID = -1;
 	myPlayer = serverPlayer = NULL;
-	sessionName[0] = playerName[0] = 0;
+	sessionName[0] = playerName[0] = sessionIPAddress[0] = 0;	// sessionIPAddress goes out in every player update
 	versionStatus = VERSION_STATUS_UNKNOWN;
 	numTeams = 0;
 	// Mission-phase flags: the lobby screens branch on these every frame (a garbage

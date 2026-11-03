@@ -549,6 +549,36 @@ long TacticalOrder::pack (MoverGroupPtr group, MoverPtr point) {
 
 //---------------------------------------------------------------------------
 
+// Reads an object order's target from the packed data. In multiplayer the data comes from
+// another machine, so a roster slot that is empty or out of range, a part that no longer
+// exists, or an unknown target type unpack as no target (0) rather than stopping the game.
+static void unpackTargetWID (long& tempData, GameObjectWatchID& targetWID) {
+
+	long targetType = (tempData & TACORDERCHUNK_TARGETTYPE_MASK);
+	tempData >>= TACORDERCHUNK_TARGETTYPE_BITS;
+	if (targetType == 0) {
+		// Mover Index
+		long netMoverIndex = (tempData & TACORDERCHUNK_MOVERINDEX_MASK);
+		if (MPlayer) {
+			targetWID = 0;
+			if (netMoverIndex < MAX_MULTIPLAYER_MOVERS && MPlayer->moverRoster[netMoverIndex])
+				targetWID = MPlayer->moverRoster[netMoverIndex]->getWatchID();
+		}
+		}
+	else if (targetType == 1) {
+		// Terrain
+		unsigned long targetPartId = (tempData & TACORDERCHUNK_TERRAINPARTID_MASK) + MIN_TERRAIN_PART_ID;
+		tempData >>= TACORDERCHUNK_TERRAINPARTID_BITS;
+
+		GameObjectPtr obj = ObjectManager->findByPartId(targetPartId);
+		targetWID = obj ? obj->getWatchID() : 0;
+		}
+	else
+		targetWID = 0;
+}
+
+//---------------------------------------------------------------------------
+
 long TacticalOrder::unpack (void) {
 
 	long tempData = data[0];
@@ -639,31 +669,8 @@ long TacticalOrder::unpack (void) {
 				setWayPoint(0, worldPos);
 				moveParams.wayPath.numPoints = 1;
 				}
-			else {
-				long targetType = (tempData & TACORDERCHUNK_TARGETTYPE_MASK);
-				tempData >>= TACORDERCHUNK_TARGETTYPE_BITS;
-				if (targetType == 0) {
-					// Mover Index
-					long netMoverIndex = (tempData & TACORDERCHUNK_MOVERINDEX_MASK);
-					if (MPlayer) {
-						targetWID = 0;
-						if (MPlayer->moverRoster[netMoverIndex])
-							targetWID = MPlayer->moverRoster[netMoverIndex]->getWatchID();
-					}
-					}
-				else if (targetType == 1) {
-					// Terrain
-					unsigned long targetPartId = (tempData & TACORDERCHUNK_TERRAINPARTID_MASK) + MIN_TERRAIN_PART_ID;
-					tempData >>= TACORDERCHUNK_TERRAINPARTID_BITS;
-
-					GameObjectPtr obj = ObjectManager->findByPartId(targetPartId);
-					if (!obj)
-						STOP(("TacticalOrder.unpack: NULL Terrain Target"));
-					targetWID = obj->getWatchID();
-					}
-				else
-					Fatal(targetType, " TacticalOrder.unpack: Bad targetType ");
-			}
+			else
+				unpackTargetWID(tempData, targetWID);
 			break;
 		case TACTICAL_ORDER_ATTACK_OBJECT:
 		case TACTICAL_ORDER_MOVETO_OBJECT:
@@ -671,31 +678,8 @@ long TacticalOrder::unpack (void) {
 		case TACTICAL_ORDER_CAPTURE:
 		case TACTICAL_ORDER_REFIT:
 		case TACTICAL_ORDER_RECOVER:
-		case TACTICAL_ORDER_GETFIXED: {
-			long targetType = (tempData & TACORDERCHUNK_TARGETTYPE_MASK);
-			tempData >>= TACORDERCHUNK_TARGETTYPE_BITS;
-			if (targetType == 0) {
-				// Mover Index
-				long netMoverIndex = (tempData & TACORDERCHUNK_MOVERINDEX_MASK);
-				if (MPlayer) {
-					targetWID = 0;
-					if (MPlayer->moverRoster[netMoverIndex])
-						targetWID = MPlayer->moverRoster[netMoverIndex]->getWatchID();
-				}
-				}
-			else if (targetType == 1) {
-				// Terrain
-				unsigned long targetPartId = (tempData & TACORDERCHUNK_TERRAINPARTID_MASK) + MIN_TERRAIN_PART_ID;
-				tempData >>= TACORDERCHUNK_TERRAINPARTID_BITS;
-
-				GameObjectPtr obj = ObjectManager->findByPartId(targetPartId);
-				if (!obj)
-					STOP(("TacticalOrder.unpack: NULL Terrain Target"));
-				targetWID = obj->getWatchID();
-				}
-			else
-				Fatal(0, " Bad targetType ");
-			}
+		case TACTICAL_ORDER_GETFIXED:
+			unpackTargetWID(tempData, targetWID);
 			break;
 		case TACTICAL_ORDER_ATTACK_POINT: {
 			long worldCell[2] = {0, 0};

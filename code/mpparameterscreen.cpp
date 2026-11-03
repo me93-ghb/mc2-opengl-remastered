@@ -682,7 +682,8 @@ void MPParameterScreen::setMission( const char* fileName, bool resetData )
 		else
 			MPlayer->missionSettings.maxPlayers = 8;
 		
-		unsigned long tmp;
+		// A map file without MissionType must not send uninitialised stack to the clients.
+		unsigned long tmp = 0;
 		result = missionFile.readIdULong( "MissionType", tmp );
 			MPlayer->missionSettings.missionType = tmp;
 

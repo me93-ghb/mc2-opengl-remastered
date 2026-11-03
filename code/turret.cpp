@@ -1162,9 +1162,15 @@ long Turret::updateWeaponFireChunks (long which)
 
 		static float entryQuadTable[4] = {0.0, 180.0, -90.0, 90.0};
 
+		//--------------------------------------------------------------------
+		// weaponIndex comes off the wire (5 bits) and indexes weaponMasterId[].
+		if ((chunk.weaponIndex >= MAX_TURRET_WEAPONS) || (((TurretTypePtr)getObjectType())->weaponMasterId[chunk.weaponIndex] == -1))
+			continue;
+
 		if (chunk.targetType == 0) 
 		{
-			GameObjectPtr target = (GameObjectPtr)MPlayer->moverRoster[chunk.targetId];
+			// The packed mover index is 7 bits but the roster holds MAX_MULTIPLAYER_MOVERS.
+			GameObjectPtr target = (chunk.targetId < MAX_MULTIPLAYER_MOVERS) ? (GameObjectPtr)MPlayer->moverRoster[chunk.targetId] : NULL;
 			//----------------------------------------------------------------------------
 			// Mover targets could be NULL now, since we free them when they're destroyed.
 			if (target) 
@@ -1179,11 +1185,9 @@ long Turret::updateWeaponFireChunks (long which)
 		else if (chunk.targetType == 1) 
 		{
 			GameObjectPtr target = ObjectManager->findByPartId(chunk.targetId);
-			if (target == NULL) 
-			{
-				DebugWeaponFireChunk (&chunk, NULL, this);
-				Assert(FALSE, 0, " Turret.updateWeaponFireChunks: NULL Terrain Target (save wfchunk.dbg file) ");
-			}
+			// handleWeaponFire dereferences the target point when target is NULL.
+			if (target == NULL)
+				continue;
 			handleWeaponFire(chunk.weaponIndex,
 							 target,
 							 NULL,
@@ -1195,11 +1199,9 @@ long Turret::updateWeaponFireChunks (long which)
 		else if (chunk.targetType == 2) 
 		{
 			GameObjectPtr target = ObjectManager->findByPartId(chunk.targetId);
-			if (target == NULL) 
-			{
-				DebugWeaponFireChunk (&chunk, NULL, this);
-				Assert(FALSE, 0, " Turret.updateWeaponFireChunks: NULL Special Target (save wfchunk.dbg file) ");
-			}
+			// handleWeaponFire dereferences the target point when target is NULL.
+			if (target == NULL)
+				continue;
 			handleWeaponFire(chunk.weaponIndex,
 							 target,
 							 NULL,
