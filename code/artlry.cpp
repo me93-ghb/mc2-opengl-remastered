@@ -98,8 +98,16 @@ extern bool MLRVertexLimitReached;
 // MISC
 //***************************************************************************
 
-void CallArtillery (long commanderID, long strikeType, Stuff::Vector3D strikeLoc, long secondsToImpact, bool randomOff) 
+void CallArtillery (long commanderID, long strikeType, Stuff::Vector3D strikeLoc, long secondsToImpact, bool randomOff)
 {
+	//-------------------------------------------------------------------
+	// Multiplayer reaches this with values from the network. Both index
+	// fixed tables below (Commander::commanders, the strike object table
+	// in createArtillery, MPlayer's per-commander strike counters).
+	if (commanderID < 0 || commanderID >= MAX_COMMANDERS || !Commander::commanders[commanderID])
+		return;
+	if (strikeType < 0 || strikeType >= NUM_ARTILLERY_TYPES)
+		return;
 
 	//-------------------------------------------------------------------
 	// If this commander already has 10 strikes going and I'm the server,

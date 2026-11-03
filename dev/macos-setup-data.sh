@@ -61,8 +61,10 @@ export MESA_GL_VERSION_OVERRIDE=4.6 MESA_GLSL_VERSION_OVERRIDE=460 MESA_SHADER_C
 export SDL_VIDEODRIVER=offscreen SDL_VIDEO_DRIVER=offscreen EGL_PLATFORM=surfaceless
 export SDL_EGL_LIBRARY="$MESA/lib/libEGL.dylib" SDL_OPENGL_LIBRARY="$MESA/lib/libGL.dylib"
 
-fst_count=$(ls "$BS"/*.fst 2>/dev/null | wc -l | tr -d ' ')
-font_count=$(ls "$BS"/assets/graphics/*.bmp 2>/dev/null | wc -l | tr -d ' ')
+# `|| true`: on a first run there is no .fst/.bmp yet, ls fails, and under
+# `set -o pipefail` that would end the script here without a message.
+fst_count=$( (ls "$BS"/*.fst 2>/dev/null || true) | wc -l | tr -d ' ')
+font_count=$( (ls "$BS"/assets/graphics/*.bmp 2>/dev/null || true) | wc -l | tr -d ' ')
 if [ "${FORCE_DATA_BUILD:-}" = 1 ] || [ "$fst_count" -lt 8 ] || [ "$font_count" -lt 12 ]; then
     say "building data (.fst + tgl + sound + objects); movies build to unused .mpg, ignore"
     ( cd "$BS" && make all BUILD_PLATFORM=linux -k ) || true   # -k: ride past flaky font/movie steps

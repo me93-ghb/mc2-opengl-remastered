@@ -872,15 +872,18 @@ void WeaponFireChunk::unpack (GameObjectPtr attacker) {
 	hit = ((tempData & WEAPONFIRECHUNK_HIT_MASK) != 0) ? true : false;
 	tempData >>= WEAPONFIRECHUNK_HIT_BITS;
 
+	//---------------------------------------------------------------------
+	// weaponIndex comes off the wire (5 bits), so check it before using it
+	// to index the attacker's weapons. Callers drop chunks for bad indices.
 	bool isMissileWeapon = false;
 	if (attacker->isMover()) {
 		long itemIndex = ((MoverPtr)attacker)->numOther + weaponIndex;
-		isMissileWeapon = ((MoverPtr)attacker)->isWeaponMissile(itemIndex);
+		isMissileWeapon = ((MoverPtr)attacker)->isWeaponIndex(itemIndex) && ((MoverPtr)attacker)->isWeaponMissile(itemIndex);
 		}
 	else if (attacker->getObjectClass() == TURRET) {
 		//----------------------
 		// Attacker is turret...
-		isMissileWeapon = ((Turret*)attacker)->isWeaponMissile(weaponIndex);
+		isMissileWeapon = (weaponIndex < MAX_TURRET_WEAPONS) && ((Turret*)attacker)->isWeaponMissile(weaponIndex);
 	}
 
 	switch (targetType) {
@@ -1532,6 +1535,9 @@ bool WeaponHitChunk::valid (long from) {
 	if (refit) {
 		if (targetType != 0)
 			Fatal(0, " Multiplayer.handleAppWeaponHitUpdate: bad targetType for refit ");
+		// The packed mover index is 7 bits but the roster holds MAX_MULTIPLAYER_MOVERS.
+		if ((targetId < 0) || (targetId >= MAX_MULTIPLAYER_MOVERS))
+			return(false);
 		MoverPtr target = MPlayer->moverRoster[targetId];
 		if (!target) {
 			if (CombatLog)

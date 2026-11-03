@@ -709,6 +709,16 @@ int _stdcall Logistics::beginMission(void*, int, void*[])
 				if (MPlayer->mechDataReceived[i]) {
 					for (long j = 0; j < 12; j++) {
 						if (MPlayer->mechData[i][j].objNumber > -1) {
+							//---------------------------------------------------------------
+							// objNumber comes from each client, and everything below treats the
+							// new mover as a BattleMech, so only a BattleMech type is added.
+							ObjectManager->loadObjectType(MPlayer->mechData[i][j].objNumber);
+							ObjectTypePtr mechType = ObjectManager->getObjectType(MPlayer->mechData[i][j].objNumber);
+							if (!mechType || (mechType->getObjectTypeClass() != BATTLEMECH_TYPE)) {
+								if (getenv("MC2_LOG"))
+									printf("[MP_PROTOCOL] rejected mech data objNumber %ld from commanderID %ld\n", (long)MPlayer->mechData[i][j].objNumber, i);
+								continue;
+							}
 							MoverInitData data;
 							memset(&data, 0, sizeof(MoverInitData));
 							data.objNumber = MPlayer->mechData[i][j].objNumber;
@@ -737,13 +747,20 @@ int _stdcall Logistics::beginMission(void*, int, void*[])
 							for (long k = 0; k < MPlayer->mechData[i][j].numComponents; k++)
 								data.components[k] = MPlayer->mechData[i][j].components[k];
 							long moverHandle = mission->addMover(&data);
-							if (moverHandle < 1)
+							// STOP only logs in release builds, so each failure also skips the mech.
+							if (moverHandle < 1) {
 								STOP(("Logistics.beginMission: unable to addMover"));
+								continue;
+							}
 							MoverPtr mover = (MoverPtr)ObjectManager->get(moverHandle);
-							if (!mover)
+							if (!mover) {
 								STOP(("Logistics.beginMission: NULL mover"));
-							if (mover->getObjectClass() != BATTLEMECH)
+								continue;
+							}
+							if (mover->getObjectClass() != BATTLEMECH) {
 								STOP(("Logistics.beginMission: not a mech"));
+								continue;
+							}
 							((BattleMech*)mover)->cBills = MPlayer->mechData[i][j].cBills;
 							strcpy(((BattleMech*)mover)->variantName, MPlayer->mechData[i][j].variantName);
 							data.variant = MPlayer->mechData[i][j].variantNum;

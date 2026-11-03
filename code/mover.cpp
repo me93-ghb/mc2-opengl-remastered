@@ -1406,6 +1406,10 @@ void StatusChunk::unpack (MoverPtr mover) {
 				//----------------
 				// Mover Target...
 				targetId = (tempData & STATUSCHUNK_MOVERINDEX_MASK);
+				// The packed index is 7 bits but the roster holds MAX_MULTIPLAYER_MOVERS.
+				// Callers drop the whole chunk when StatusChunkUnpackErr is set.
+				if (targetId >= MAX_MULTIPLAYER_MOVERS)
+					StatusChunkUnpackErr = 1;
 				break;
 			case STATUSCHUNK_TARGET_TERRAIN:
 				//-------------------------
@@ -3840,7 +3844,8 @@ long Mover::updateWeaponFireChunks (long which) {
 
 		TargetRolo = chunk.targetType;
 		if (chunk.targetType == 0 /*WEAPONFIRECHUNK_TARGET_MOVER*/) {
-			GameObjectPtr target = (GameObjectPtr)MPlayer->moverRoster[chunk.targetId];
+			// The packed mover index is 7 bits but the roster holds MAX_MULTIPLAYER_MOVERS.
+			GameObjectPtr target = (chunk.targetId < MAX_MULTIPLAYER_MOVERS) ? (GameObjectPtr)MPlayer->moverRoster[chunk.targetId] : NULL;
 			//----------------------------------------------------------------------------
 			// Mover targets could be NULL now, since we free them when they're destroyed.
 			if (target)
@@ -3854,10 +3859,9 @@ long Mover::updateWeaponFireChunks (long which) {
 			}
 		else if (chunk.targetType == 1 /*WEAPONFIRECHUNK_TARGET_TERRAIN*/) {
 			GameObjectPtr target = ObjectManager->findByPartId(chunk.targetId);
-			if (target == NULL) {
-				DebugWeaponFireChunk (&chunk, NULL, this);
-				Assert(false, 0, " Mover.updateWeaponFireChunks: NULL Terrain Target (save wfchunk.dbg file) ");
-			}
+			// handleWeaponFire dereferences the target point when target is NULL.
+			if (target == NULL)
+				continue;
 			handleWeaponFire(weaponIndex,
 							 target,
 							 NULL,
@@ -3868,10 +3872,9 @@ long Mover::updateWeaponFireChunks (long which) {
 			}
 		else if (chunk.targetType == 2 /*WEAPONFIRECHUNK_TARGET_TRAIN*/) {
 			GameObjectPtr target = ObjectManager->findByPartId(chunk.targetId);
-			if (target == NULL) {
-				DebugWeaponFireChunk (&chunk, NULL, this);
-				Assert(false, 0, " Mover.updateWeaponFireChunks: NULL Special Target (save wfchunk.dbg file) ");
-			}
+			// handleWeaponFire dereferences the target point when target is NULL.
+			if (target == NULL)
+				continue;
 			handleWeaponFire(weaponIndex,
 							 target,
 							 NULL,

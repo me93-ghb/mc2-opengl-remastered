@@ -220,6 +220,7 @@ struct VideoSession {
     int              aOutRate     = 0;
     int              aOutChannels = 0;
     bool             audioStreamStarted = false;
+    bool             sidecarStarted = false;  // sidecar WAV playing on the voice-over stream
     long long        aPushedFrames = 0;   // PCM frames handed to the mixer ring
 
     // Read-ahead: video packets demuxed while pulling audio ahead of the
@@ -445,6 +446,7 @@ VideoSession* video_open(const VideoOpenParams& p, VideoOpenResult* out)
                 }
             }
         }
+        s->sidecarStarted = sidecarOK;
     }
 
     // 7. Fill out
@@ -470,13 +472,26 @@ VideoSession* video_open(const VideoOpenParams& p, VideoOpenResult* out)
     return s;
 }
 
-void video_close(VideoSession* s)
+// Ends the audio this session started. The sidecar WAV plays on the sound
+// system's voice-over stream, which outlives the session, so it is only
+// stopped when the movie is cut short: after a natural end the WAV has run
+// its course and the stream may already carry a newer voice-over.
+static void stopSessionAudio(VideoSession* s, bool endedEarly)
 {
-    if (!s) return;
     if (s->audioStreamStarted && soundSystem) {
         reinterpret_cast<SoundSystem*>(soundSystem)->endVideoPCMStream();
         s->audioStreamStarted = false;
     }
+    if (s->sidecarStarted && endedEarly && soundSystem) {
+        reinterpret_cast<SoundSystem*>(soundSystem)->stopSupportSample();
+    }
+    s->sidecarStarted = false;
+}
+
+void video_close(VideoSession* s)
+{
+    if (!s) return;
+    stopSessionAudio(s, !s->eof);
     if (s->texHandle != 0) {
         gos_DestroyTexture(s->texHandle);
         s->texHandle = 0;
@@ -857,14 +872,11 @@ void video_pause(VideoSession* s, bool paused)
 void video_stop(VideoSession* s)
 {
     if (!s) return;
-    s->eof = true;
-    // End the audio stream if we started one. Texture is retained
+    // End the audio we started. Texture is retained
     // until video_close (destructor) so a render() after stop still
     // shows the last frame harmlessly.
-    if (s->audioStreamStarted && soundSystem) {
-        reinterpret_cast<SoundSystem*>(soundSystem)->endVideoPCMStream();
-        s->audioStreamStarted = false;
-    }
+    stopSessionAudio(s, !s->eof);
+    s->eof = true;
 }
 
 void video_restart(VideoSession* s)

@@ -58,6 +58,8 @@ def main():
         henv["MC2_MP_AUTORESULTS"] = "1"; os.environ["MC2_MP_AUTORESULTS"] = "1"
     if a.orders in ("vtol", "recover", "refit"):
         henv["MC2_MP_RP"] = "10000"
+    if a.orders == "fire":   # no shipped effect can light a tree; the host lights one so the relay is tested
+        henv["MC2_MP_TEST_IGNITE"] = "40"
     if a.map: henv["MC2_MP_MAP"] = a.map
     if a.timelimit: henv["MC2_MP_TIMELIMIT"] = str(a.timelimit)
     if not a.no_launch:
@@ -81,15 +83,15 @@ def main():
               and check("client: assigned cid", clog, r"\[MP\] assigned commanderID 1")
               and check("client: settings applied", clog, r"\[MP\] settings applied map=")
               and check("host: client ready", hlog, r"\[MP\] player 1 ready=1")
-              and check("host: autotest toggle", hlog, r"\[MP\] autotest toggled airStrike=")
+              and check("host: autotest toggle", hlog, r"\[MP\] autotest toggled sensorProbe=")
               and check("client: change applied", clog, r"\[MP\] settings applied .*"))
         if ok:  # the second 'settings applied' must carry the toggled value: compare last lines
-            hv = re.search(r"airStrike=(\d)", open(hlog).read()).group(1)
+            hv = re.search(r"sensorProbe=(\d)", open(hlog).read()).group(1)
             last = [l for l in open(clog, errors="replace") if "[MP] settings applied" in l][-1]
-            # airStrike is not in the client line; accept any second application after the toggle
+            # sensorProbe is not in the client line; accept any second application after the toggle
             n_applied = sum(1 for l in open(clog, errors="replace") if "[MP] settings applied" in l)
             ok = n_applied >= 2
-            checks.append(("client: >=2 settings applications", ok, f"count={n_applied} hostAirStrike={hv}"))
+            checks.append(("client: >=2 settings applications", ok, f"count={n_applied} hostSensorProbe={hv}"))
             print(f"[mp-smoke] {'PASS' if ok else 'FAIL'} client: >=2 settings applications (count={n_applied})", flush=True)
         if ok and not a.no_launch:
             deadline = time.time() + 150   # two headless mission loads

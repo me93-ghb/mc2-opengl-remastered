@@ -391,7 +391,8 @@ void MissionInterfaceManager::init (void)
 	
 	bPaused = 0;
 	bPausedWithoutMenu = 0;
-	resolution = Environment.screenWidth;
+	resolutionX = Environment.screenWidth;
+	resolutionY = Environment.screenHeight;
 	s_instance = this;
 	bEnergyWeapons = 0;
 	zoomChoice = 2;
@@ -826,7 +827,7 @@ void MissionInterfaceManager::update (void)
 
 	const std::chrono::steady_clock::time_point _mifT0 =
 		s_mfOn ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-	if ( Environment.screenWidth != resolution )
+	if ( Environment.screenWidth != resolutionX || Environment.screenHeight != resolutionY )
 	{
 		swapResolutions();
 	}
@@ -6138,7 +6139,8 @@ bool MissionInterfaceManager::isPausedWithoutMenu()
 void	MissionInterfaceManager::swapResolutions()
 {
 	controlGui.swapResolutions( Environment.screenWidth, Environment.screenHeight );
-	resolution = Environment.screenWidth;
+	resolutionX = Environment.screenWidth;
+	resolutionY = Environment.screenHeight;
 	keyboardRef->init();
 }
 

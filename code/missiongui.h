@@ -170,8 +170,10 @@ public:
 		bool						bPausedWithoutMenu;
 		bool						bEnergyWeapons;
 		bool						bDrawHotKeys;
-		long						resolution;
-		
+		// separate X and Y so a resolution change of only one dimension is seen
+		long						resolutionX;
+		long						resolutionY;
+
 		//-----------------------------------------------
 		// Attila (Strategic Commander) Data
 		float						attilaXAxis;
@@ -258,6 +260,20 @@ public:
 
 		void setMechRecovered (long teamID, bool set) {
 			mechRecovered[teamID] = set;
+		}
+
+		// The recovery team's support vehicle ID (ControlGui::vehicleIDs): beginVtol and
+		// updateVTol fly the Karnov for it and the VTOL for every other support vehicle.
+		static const long KARNOV_VEHICLE_ID = 147;
+
+		// Multiplayer: is a VTOL or Karnov already flying for this commander?
+		bool isVtolActive (long commanderID) const {
+			return vTol[commanderID] != NULL;
+		}
+
+		// Multiplayer: is this commander's Karnov here, waiting for the owner to finish the recovery?
+		bool isAwaitingRecovery (long commanderID) const {
+			return vTol[commanderID] && (vehicleID[commanderID] == KARNOV_VEHICLE_ID) && !mechRecovered[commanderID] && mechToRecover[commanderID];
 		}
 
 		void updateOldStyle(bool shiftDn, bool altDn, bool ctrlDn, bool bGui, 

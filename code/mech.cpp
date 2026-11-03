@@ -217,6 +217,9 @@ long NumLocationCriticalSpaces[NUM_BODY_LOCATIONS] = {
 	NUM_CRITICAL_SPACES_RLEG
 };
 
+// Critical hit chunk space value meaning "the whole body location was destroyed".
+#define	CRITICAL_SPACE_WHOLE_LOCATION	15
+
 long MechHitSectionTable[NUM_ATTACKSOURCES] = {
 	MECH_HIT_SECTION_MIDDLE,	// Weapon Fire
 	MECH_HIT_SECTION_MIDDLE,	// Collision
@@ -7313,7 +7316,7 @@ void BattleMech::calcCriticalHit (long hitLocation) {
 	{
 		destroyBodyLocation(bodyLocation);
 		if (MPlayer)
-			addCriticalHitChunk(CHUNK_SEND, bodyLocation, 15);
+			addCriticalHitChunk(CHUNK_SEND, bodyLocation, CRITICAL_SPACE_WHOLE_LOCATION);
 	}
 }
 
@@ -7321,7 +7324,7 @@ void BattleMech::calcCriticalHit (long hitLocation) {
 
 void BattleMech::handleCriticalHit (long bodyLocation, long criticalSpace) {
 
-	if (criticalSpace == 15)
+	if (criticalSpace == CRITICAL_SPACE_WHOLE_LOCATION)
 		destroyBodyLocation(bodyLocation);
 	else
 		hitInventoryItem(body[bodyLocation].criticalSpaces[criticalSpace].inventoryID);
@@ -7335,6 +7338,11 @@ long BattleMech::updateCriticalHitChunks (long which) {
 		unsigned char chunkData = criticalHitChunks[which][i];
 		long criticalSpace = chunkData & 0x0F;
 		long bodyLocation = (chunkData >> 4);
+		// Chunks arrive from the network: both nibbles index fixed-size arrays.
+		if (bodyLocation >= NUM_MECH_BODY_LOCATIONS)
+			continue;
+		if ((criticalSpace != CRITICAL_SPACE_WHOLE_LOCATION) && (criticalSpace >= NumLocationCriticalSpaces[bodyLocation]))
+			continue;
 		handleCriticalHit(bodyLocation, criticalSpace);
 	}
 

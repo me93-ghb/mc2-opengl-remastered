@@ -1793,7 +1793,8 @@ long MechWarrior::removeQueuedTacOrder (TacticalOrderPtr tacOrder) {
 
 	tacOrderQueue[tacOrderQueueIndex].marker = 0;
 
-	for (long i = 0; i < numTacOrdersQueued; i++)
+	// Shift the rest down; the last entry has no successor (a full queue would read past the end).
+	for (long i = 0; i < numTacOrdersQueued - 1; i++)
 		tacOrderQueue[i] = tacOrderQueue[i + 1];
 	numTacOrdersQueued--;
 
