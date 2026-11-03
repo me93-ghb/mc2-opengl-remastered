@@ -42,6 +42,7 @@ void SoundSystem::pushVideoPCMSamples(const int16_t*, int frameCount) { CHECK(st
 void SoundSystem::endVideoPCMStream() { streamActive = false; }
 int  SoundSystem::videoPCMSamplesConsumed() const { return 0; }
 long SoundSystem::playDigitalStream(const char*) { return -1; }
+void SoundSystem::stopSupportSample() {}
 
 class GameSoundSystem;
 static char mixerStub;
